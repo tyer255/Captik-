@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'ClashDisplay';
+  src: url('/assets/ClashDisplay-Bold.woff2') format('woff2');
+  font-weight: 700 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --amber: #f5a524;
+  --amber-bright: #fbbf24;
+  --amber-ink: #f5a524;
+  --ink: #f3efe7;
+  --mute: #8f8a82;
+  --rule: rgba(243, 239, 231, 0.12);
+  --bg-studio: #0b0b0c;
+  --bg-panel: #0e0e10;
+  --bg-elevated: #16161a;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.paper {
+  --ink: #17150f;
+  --mute: #6b655a;
+  --rule: rgba(23, 21, 15, 0.13);
+  --amber-ink: #b45f06;
+  color: var(--ink);
+  background-color: #f1ece2;
+}
+
+.dark-band {
+  --ink: #f3efe7;
+  --mute: #8f8a82;
+  --rule: rgba(243, 239, 231, 0.12);
+  --amber-ink: var(--amber);
+  color: var(--ink);
+  background-color: #0b0b0c;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: #0b0b0c;
+  color: #f3efe7;
+}
+
+.font-display {
+  font-family: 'ClashDisplay', 'Bricolage Grotesque', 'Plus Jakarta Sans', sans-serif;
+}
+
+.font-condensed {
+  font-family: 'Anton', 'Oswald', Impact, sans-serif;
+}
+
+.font-serif-editorial {
+  font-family: 'Playfair Display', Georgia, serif;
+}
+
+.font-hand {
+  font-family: 'Caveat', cursive;
+}
+
+.font-mono-tabular {
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom subtle studio scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@keyframes captik-pop {
+  0% { transform: scale(0.72) translateY(6px); opacity: 0.2; }
+  60% { transform: scale(1.08) translateY(-2px); opacity: 1; }
+  100% { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+@keyframes captik-float {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  50% { transform: translateY(-4px) rotate(-0.8deg); }
+}
+
+@keyframes captik-pulse-glow {
+  0%, 100% { filter: drop-shadow(0 0 12px rgba(245, 165, 36, 0.55)); }
+  50% { filter: drop-shadow(0 0 24px rgba(245, 165, 36, 0.95)); }
+}
+
+@keyframes captik-glitch {
+  0%, 100% { transform: translate(0, 0) skew(0deg); }
+  20% { transform: translate(-2px, 1px) skew(-2deg); }
+  40% { transform: translate(2px, -1px) skew(2deg); }
+  60% { transform: translate(-1px, -1px) skew(1deg); }
+  80% { transform: translate(1px, 2px) skew(-1deg); }
+}
+
+@keyframes captik-wave {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  25% { transform: translateY(-4px) rotate(-2deg); }
+  75% { transform: translateY(4px) rotate(2deg); }
+}
+
+.anim-pop {
+  animation: captik-pop 0.26s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.anim-float {
+  animation: captik-float 2.4s ease-in-out infinite;
+}
+.anim-glow {
+  animation: captik-pulse-glow 1.8s ease-in-out infinite;
+}
+.anim-glitch {
+  animation: captik-glitch 0.35s steps(2, end) infinite;
+}
+.anim-wave {
+  animation: captik-wave 1.6s ease-in-out infinite;
+}

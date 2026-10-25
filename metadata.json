@@ -1,0 +1,6 @@
+{
+  "name": "Captik — AI Video & Hinglish Caption Editor",
+  "description": "Full-featured browser video editor and dynamic caption studio with 106 templates, Behind-You depth cutouts, 36 AI Edit styles, dynamic text animations, 277 sound effects, and media library assets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
