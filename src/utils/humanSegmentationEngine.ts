@@ -22,6 +22,70 @@ export interface HumanSegmentationResult {
   shoulderWidthPercent: number;
 }
 
+export interface ObjectCoverCropRect {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+}
+
+/**
+ * Computes the exact source crop rectangle (`sx, sy, sw, sh`) that matches CSS `object-fit: cover`
+ * when drawing a video/canvas of `(srcW, srcH)` into a target box of `(dstW, dstH)`.
+ * Prevents aspect-ratio stretching or "double face" misalignment between `<video>` and `<canvas>`.
+ */
+export function computeObjectCoverCrop(
+  srcW: number,
+  srcH: number,
+  dstW: number,
+  dstH: number
+): ObjectCoverCropRect {
+  const safeSrcW = Math.max(1, srcW || dstW || 540);
+  const safeSrcH = Math.max(1, srcH || dstH || 960);
+  const safeDstW = Math.max(1, dstW || 540);
+  const safeDstH = Math.max(1, dstH || 960);
+
+  const srcAspect = safeSrcW / safeSrcH;
+  const dstAspect = safeDstW / safeDstH;
+
+  if (Math.abs(srcAspect - dstAspect) < 0.002) {
+    return { sx: 0, sy: 0, sw: safeSrcW, sh: safeSrcH };
+  }
+
+  if (srcAspect > dstAspect) {
+    // Source is wider than target -> center-crop horizontally
+    const sw = safeSrcH * dstAspect;
+    const sx = (safeSrcW - sw) * 0.5;
+    return { sx, sy: 0, sw, sh: safeSrcH };
+  } else {
+    // Source is taller than target -> center-crop vertically
+    const sh = safeSrcW / dstAspect;
+    const sy = (safeSrcH - sh) * 0.5;
+    return { sx: 0, sy, sw: safeSrcW, sh };
+  }
+}
+
+/**
+ * Draws an HTMLVideoElement or HTMLCanvasElement onto `ctx` using exact `object-fit: cover` geometry.
+ */
+export function drawSourceObjectCover(
+  ctx: CanvasRenderingContext2D,
+  source: HTMLVideoElement | HTMLCanvasElement,
+  dstW: number,
+  dstH: number
+): void {
+  const srcW =
+    source instanceof HTMLVideoElement
+      ? source.videoWidth || dstW
+      : source.width || dstW;
+  const srcH =
+    source instanceof HTMLVideoElement
+      ? source.videoHeight || dstH
+      : source.height || dstH;
+  const { sx, sy, sw, sh } = computeObjectCoverCrop(srcW, srcH, dstW, dstH);
+  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, dstW, dstH);
+}
+
 interface ColorSample {
   r: number;
   g: number;
@@ -205,14 +269,16 @@ export class HumanSegmentationTracker {
    * temporally smoothed human silhouette alpha matte, and composites the segmented
    * human foreground onto `targetCanvas`.
    *
-   * If no human is reliably detected in the frame, `targetCanvas` is cleared and
-   * `hasHumanSubject: false` is returned so text is never masked behind random objects.
+   * If `skipForegroundDraw` is true (used in the live HTML5 `<video>` player), `targetCanvas`
+   * is kept transparent so a second copy of the person's face is NEVER drawn over the `<video>`
+   * element, completely eliminating any "two faces" / double-head ghosting artifact.
    */
   public processVideoFrame(
     source: HTMLVideoElement | HTMLCanvasElement,
     targetCanvas: HTMLCanvasElement,
     filterCss = 'none',
-    timestampSec = 0
+    timestampSec = 0,
+    skipForegroundDraw = false
   ): HumanSegmentationResult {
     const outW = targetCanvas.width || 540;
     const outH = targetCanvas.height || 960;
@@ -246,7 +312,7 @@ export class HumanSegmentationTracker {
 
     try {
       this.workCtx.clearRect(0, 0, mw, mh);
-      this.workCtx.drawImage(source, 0, 0, mw, mh);
+      drawSourceObjectCover(this.workCtx, source, mw, mh);
     } catch {
       outCtx.clearRect(0, 0, outW, outH);
       return {
@@ -480,8 +546,8 @@ export class HumanSegmentationTracker {
       };
     }
 
-    // 5. Update Temporal Person Tracker (Head, Hair, Shoulders, Torso)
-    const trackAlpha = isLargeJump ? 1.0 : 0.38;
+    // 5. Update Temporal Person Tracker (Head, Hair, Shoulders, Torso) with fast responsiveness (no trailing head ghosting)
+    const trackAlpha = isLargeJump ? 1.0 : 0.82;
     this.trackedHeadX = this.trackedHeadX * (1 - trackAlpha) + rawHeadX * trackAlpha;
     this.trackedHeadY = this.trackedHeadY * (1 - trackAlpha) + rawHeadY * trackAlpha;
     this.trackedHeadRx = this.trackedHeadRx * (1 - trackAlpha) + rawHeadRx * trackAlpha;
@@ -492,7 +558,6 @@ export class HumanSegmentationTracker {
       Math.max(0.28, Math.min(0.46, this.trackedHeadRx * 2.75)) * trackAlpha;
     this.hasInitializedTrack = true;
 
-    // 6. Build Pixel-Level Human Silhouette Alpha Matte (rawMask)
     const hx = this.trackedHeadX;
     const hy = this.trackedHeadY;
     const hrx = this.trackedHeadRx * 1.18; // include hair & ears
@@ -501,6 +566,20 @@ export class HumanSegmentationTracker {
     const neckY = hy + hry * 0.72;
     const shoulderHalfW = this.trackedShoulderSpan;
 
+    // When used in the live HTML5 <video> player, never draw a duplicate copy of the face onto targetCanvas
+    if (skipForegroundDraw) {
+      outCtx.clearRect(0, 0, outW, outH);
+      return {
+        hasHumanSubject: true,
+        confidence: Math.round(this.trackedConfidence),
+        headXPercent: Math.round(this.trackedHeadX * 100),
+        headYPercent: Math.round(this.trackedHeadY * 100),
+        shoulderYPercent: Math.round(shoulderY * 100),
+        shoulderWidthPercent: Math.round(this.trackedShoulderSpan * 100),
+      };
+    }
+
+    // 6. Build Pixel-Level Human Silhouette Alpha Matte (rawMask)
     for (let y = 0; y < mh; y++) {
       const ny = y / mh;
       const rowOffset = y * mw;
@@ -589,26 +668,10 @@ export class HumanSegmentationTracker {
       }
     }
 
-    // 7. Temporal EMA Stabilization across frames to prevent flickering
-    if (
-      !this.prevTemporalMask ||
-      this.prevTemporalMask.length !== this.rawMask.length ||
-      isLargeJump
-    ) {
-      this.prevTemporalMask = new Float32Array(this.rawMask);
-    } else {
-      const len = this.rawMask.length;
-      for (let i = 0; i < len; i++) {
-        const stabilized = this.rawMask[i] * 0.72 + this.prevTemporalMask[i] * 0.28;
-        this.rawMask[i] = stabilized;
-        this.prevTemporalMask[i] = stabilized;
-      }
-    }
-
-    // 8. Edge Feathering Pass (smooth anti-aliased hair & shoulder boundaries)
+    // 7. Edge Feathering Pass (smooth anti-aliased hair & shoulder boundaries)
     featherAlphaMask(this.rawMask, this.tempMask, this.smoothMask, mw, mh);
 
-    // 9. Write Feathered Alpha Mask to maskCanvas
+    // 8. Write Feathered Alpha Mask to maskCanvas
     if (
       !this.maskImageData ||
       this.maskImageData.width !== mw ||
@@ -627,13 +690,13 @@ export class HumanSegmentationTracker {
     }
     this.maskCtx.putImageData(this.maskImageData, 0, 0);
 
-    // 10. Composite Segmented Human Foreground onto targetCanvas
+    // 9. Composite Segmented Human Foreground onto targetCanvas using exact object-cover geometry
     outCtx.save();
     outCtx.clearRect(0, 0, outW, outH);
     if (filterCss && filterCss !== 'none') {
       outCtx.filter = filterCss;
     }
-    outCtx.drawImage(source, 0, 0, outW, outH);
+    drawSourceObjectCover(outCtx, source, outW, outH);
     outCtx.filter = 'none';
     outCtx.globalCompositeOperation = 'destination-in';
     outCtx.imageSmoothingEnabled = true;

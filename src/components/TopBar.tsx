@@ -11,6 +11,9 @@ import {
   FolderKanban,
   ChevronDown,
   Loader2,
+  Undo2,
+  Redo2,
+  Sparkles,
 } from 'lucide-react';
 import type { CaptikProject } from '../utils/projectAndOcrLogic';
 
@@ -50,6 +53,8 @@ interface TopBarProps {
   onTriggerOcrScan: () => void;
   isOcrScanning: boolean;
   detectedTextCount: number;
+  onTriggerAiCaptions?: () => void;
+  isGeneratingCaptions?: boolean;
   onSaveProject: () => void;
 }
 
@@ -81,6 +86,10 @@ export const TopBar: React.FC<TopBarProps> = ({
   quality,
   onQualityChange,
   onOpenExportModal,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
   projects,
   activeProjectId,
   onSelectProject,
@@ -88,6 +97,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   onTriggerOcrScan,
   isOcrScanning,
   detectedTextCount,
+  onTriggerAiCaptions,
+  isGeneratingCaptions = false,
   onSaveProject,
 }) => {
   const [isEditingName, setIsEditingName] = useState(false);
@@ -380,8 +391,54 @@ export const TopBar: React.FC<TopBarProps> = ({
         >
           <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
           <span className="hidden sm:inline">New Project</span>
-          <span className="sm:hidden">New</span>
         </button>
+      </div>
+
+      {/* Center: Undo, Redo, Video Text OCR Scanner, Saved Toast */}
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-0.5 bg-[#141418] border border-white/[0.08] rounded-md p-0.5">
+          <button
+            type="button"
+            onClick={onUndo}
+            disabled={!canUndo}
+            title="Undo (Ctrl+Z / ⌘Z)"
+            aria-label="Undo"
+            className="p-1 rounded hover:bg-white/[0.08] text-zinc-400 hover:text-white disabled:opacity-30 cursor-pointer transition-colors"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onRedo}
+            disabled={!canRedo}
+            title="Redo (Ctrl+Y / ⌘Y)"
+            aria-label="Redo"
+            className="p-1 rounded hover:bg-white/[0.08] text-zinc-400 hover:text-white disabled:opacity-30 cursor-pointer transition-colors"
+          >
+            <Redo2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* AI Speech-to-Caption Generation Button */}
+        {onTriggerAiCaptions && (
+          <button
+            type="button"
+            data-testid="topbar-ai-captions-btn"
+            onClick={onTriggerAiCaptions}
+            disabled={isGeneratingCaptions}
+            className="hidden md:flex h-7 px-2.5 rounded-md bg-[#f5a524]/15 hover:bg-[#f5a524]/25 border border-[#f5a524]/45 text-[#f5a524] text-[11.5px] font-semibold items-center gap-1.5 transition-colors cursor-pointer shrink-0 disabled:opacity-60"
+            title="Generate synchronized captions from spoken audio in this video using Gemini AI"
+          >
+            {isGeneratingCaptions ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#f5a524]" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5 text-[#f5a524]" />
+            )}
+            <span>
+              {isGeneratingCaptions ? 'Generating Captions...' : 'AI Captions'}
+            </span>
+          </button>
+        )}
 
         {/* Automatic OCR Text Detection Button */}
         <button
@@ -389,7 +446,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           data-testid="topbar-ocr-btn"
           onClick={onTriggerOcrScan}
           disabled={isOcrScanning}
-          className="hidden lg:flex h-7 px-2.5 rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/35 text-emerald-300 text-[11.5px] font-semibold items-center gap-1.5 transition-colors cursor-pointer shrink-0 disabled:opacity-60"
+          className="hidden md:flex h-7 px-2.5 rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/35 text-emerald-300 text-[11.5px] font-semibold items-center gap-1.5 transition-colors cursor-pointer shrink-0 disabled:opacity-60"
           title="Scan current video frames with real OCR to detect and edit text inside the video"
         >
           {isOcrScanning ? (
@@ -399,35 +456,36 @@ export const TopBar: React.FC<TopBarProps> = ({
           )}
           <span>
             {isOcrScanning
-              ? 'Scanning Video Text...'
+              ? 'Scanning OCR...'
               : detectedTextCount > 0
-              ? `Detected Text (${detectedTextCount})`
+              ? `Video Text (${detectedTextCount})`
               : 'Auto-Detect Text'}
           </span>
         </button>
-      </div>
 
-      {/* Right: Save, SRT, Help ?, Quality [1080p | 720p], Export (Exact match to captik_desk.webp) */}
-      <div className="flex items-center gap-2">
+        {/* Saved Status Indicator */}
         <button
           type="button"
           onClick={handleSaveClick}
-          className="hidden sm:flex h-7 px-2.5 rounded-md hover:bg-white/[0.06] text-zinc-300 hover:text-white text-xs font-medium items-center gap-1.5 transition-colors cursor-pointer"
-          title="Save project locally"
+          className="hidden lg:flex h-7 px-2 rounded-md hover:bg-white/[0.06] text-zinc-400 hover:text-white text-[11px] font-medium items-center gap-1 transition-colors cursor-pointer"
+          title="Click to save project"
         >
           {savedToast ? (
             <>
               <Check className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="text-emerald-400">Saved</span>
+              <span className="text-emerald-400 font-semibold">Saved</span>
             </>
           ) : (
             <>
-              <Save className="w-3.5 h-3.5 text-zinc-400" />
-              <span>Save</span>
+              <Save className="w-3 h-3 text-zinc-500" />
+              <span className="text-zinc-400">Save</span>
             </>
           )}
         </button>
+      </div>
 
+      {/* Right: SRT, Help ?, Quality [1080p | 720p], Export */}
+      <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={onDownloadSrt}
@@ -449,7 +507,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#f5a524]" />
         </button>
 
-        {/* Quality segmented selector matching captik_desk.webp */}
+        {/* Quality segmented selector */}
         <div className="hidden md:flex items-center gap-1 bg-[#141418] border border-white/[0.08] rounded-lg px-2 py-0.5 h-7">
           <span className="text-[11px] text-zinc-400 font-medium mr-0.5">Quality</span>
           {(['1080p', '720p', '4K'] as ExportQuality[]).map((q) => (

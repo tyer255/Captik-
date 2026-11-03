@@ -61,6 +61,7 @@ import {
   deleteVideoOrAudioClip,
   moveOrRearrangeClip,
   DEFAULT_ADJUSTMENTS,
+  getWordTextForScript,
   type CaptionSegment,
   type ColorAdjustments,
   type CustomStyleOverrides,
@@ -72,9 +73,16 @@ import {
   createNewProjectRecord,
   updateDetectedTextItem,
   convertDetectedTextsToCaptionSegments,
+  isOcrOrCaptionGibberish,
   type CaptikProject,
   type DetectedVideoTextItem,
 } from './utils/projectAndOcrLogic';
+import {
+  isGibberishToken,
+  hasEnglishTranslatedHindiBug,
+  upgradeSegmentsToHinglishMultiScript,
+  transliterateWordMultiScript,
+} from './utils/aiCaptionParser';
 import {
   saveVideoBlobToIdb,
   loadVideoBlobFromIdb,
@@ -86,6 +94,10 @@ import {
   type OcrScanProgress,
 } from './utils/videoOcrEngine';
 import {
+  generateAiCaptionsFromVideo,
+  type AiCaptionProgress,
+} from './utils/aiCaptionEngine';
+import {
   ScanText,
   Captions,
   Sparkles,
@@ -95,8 +107,8 @@ import {
   Trash2,
 } from 'lucide-react';
 
-const PROJECTS_STORAGE_KEY = 'captik_studio_projects_v2';
-const ACTIVE_PROJECT_ID_KEY = 'captik_studio_active_project_id_v2';
+const PROJECTS_STORAGE_KEY = 'captik_studio_projects_v3';
+const ACTIVE_PROJECT_ID_KEY = 'captik_studio_active_project_id_v3';
 
 interface HistorySnapshot {
   segments: CaptionSegment[];
@@ -133,55 +145,14 @@ function createInitialOverrides(tpl: CaptionTemplateSpec): CustomStyleOverrides 
 function createDefaultInitialProject(): CaptikProject {
   const defaultAsset = MEDIA_LIBRARY_ASSETS[0];
   const defaultTpl = findTemplate('look_garnet');
-  const initialDetected: DetectedVideoTextItem[] = [
-    {
-      id: 'ocr-init-1',
-      text: 'TERRACE CREATOR REEL',
-      originalText: 'TERRACE CREATOR REEL',
-      startTime: 0.2,
-      endTime: 2.5,
-      x: 50,
-      y: 16,
-      originalX: 50,
-      originalY: 16,
-      width: 68,
-      height: 10,
-      confidence: 94,
-      fontScale: 1,
-      textColor: '#FFFDF8',
-      bgColor: '#141418',
-      maskOriginal: true,
-      isRemoved: false,
-      stylePreset: 'template',
-    },
-    {
-      id: 'ocr-init-2',
-      text: 'HINGLISH CAPTIONS IN 1 CLICK',
-      originalText: 'HINGLISH CAPTIONS IN 1 CLICK',
-      startTime: 2.6,
-      endTime: 5.2,
-      x: 50,
-      y: 18,
-      originalX: 50,
-      originalY: 18,
-      width: 72,
-      height: 10,
-      confidence: 91,
-      fontScale: 1,
-      textColor: '#F5A524',
-      bgColor: '#101014',
-      maskOriginal: true,
-      isRemoved: false,
-      stylePreset: 'template',
-    },
-  ];
+  const initialDetected: DetectedVideoTextItem[] = [];
 
   return createNewProjectRecord({
     id: 'proj-default-terrace',
     name: defaultAsset.title,
-    videoUrl: defaultAsset.videoUrl || '/assets/terrace_reel.mp4',
+    videoUrl: defaultAsset.videoUrl || '/assets/raw_take.mp4',
     posterUrl: defaultAsset.posterUrl,
-    fileName: 'terrace_reel.mp4',
+    fileName: 'raw_take.mp4',
     isCustomUpload: false,
     duration: Number((defaultAsset.durationMs / 1000).toFixed(2)),
     aspectRatio: '9:16',
@@ -190,16 +161,6 @@ function createDefaultInitialProject(): CaptikProject {
     adjustments: DEFAULT_ADJUSTMENTS,
     segments: HYDRATED_INITIAL_SEGMENTS,
     overlays: [
-      {
-        id: 'ov-init-1',
-        type: 'element',
-        label: 'STOP SCROLLING',
-        start: 2.1,
-        end: 4.2,
-        color: '#F59E0B',
-        x: 50,
-        y: 24,
-      },
       {
         id: 'ov-sfx-1',
         type: 'sfx',
@@ -211,7 +172,7 @@ function createDefaultInitialProject(): CaptikProject {
       },
     ],
     detectedTexts: initialDetected,
-    ocrStatus: 'completed',
+    ocrStatus: 'idle',
     frameThumbnails: [
       '/assets/terrace_poster.webp',
       '/assets/take1.webp',
@@ -223,19 +184,21 @@ function createDefaultInitialProject(): CaptikProject {
 }
 
 function getInitialViewFromLocation(): AppViewMode {
-  if (typeof window === 'undefined') return 'editor';
+  if (typeof window === 'undefined') return 'landing';
   const path = window.location.pathname.toLowerCase();
-  if (path === '/home' || path === '/landing') return 'landing';
-  if (path.startsWith('/templates')) return 'templates';
-  if (path.startsWith('/plugin')) return 'plugin';
-  if (path.startsWith('/pricing')) return 'pricing';
-  if (path.startsWith('/changelog')) return 'changelog';
-  if (path.startsWith('/about')) return 'about';
-  if (path.startsWith('/privacy')) return 'privacy';
-  if (path.startsWith('/terms')) return 'terms';
-  if (path.startsWith('/workspace') || path.startsWith('/projects'))
+  const hash = window.location.hash.toLowerCase();
+  if (path === '/editor' || path.startsWith('/editor/') || hash === '#editor')
+    return 'editor';
+  if (path.startsWith('/templates') || hash === '#templates') return 'templates';
+  if (path.startsWith('/plugin') || hash === '#plugin') return 'plugin';
+  if (path.startsWith('/pricing') || hash === '#pricing') return 'pricing';
+  if (path.startsWith('/changelog') || hash === '#changelog') return 'changelog';
+  if (path.startsWith('/about') || hash === '#about') return 'about';
+  if (path.startsWith('/privacy') || hash === '#privacy') return 'privacy';
+  if (path.startsWith('/terms') || hash === '#terms') return 'terms';
+  if (path.startsWith('/workspace') || path.startsWith('/projects') || hash === '#workspace')
     return 'workspace';
-  return 'editor';
+  return 'landing'; // Landing page is always the default home page!
 }
 
 export default function App() {
@@ -250,7 +213,39 @@ export default function App() {
       if (raw) {
         const parsed = JSON.parse(raw) as CaptikProject[];
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          return parsed.map((p) => {
+            const rawSegments = Array.isArray(p.segments) ? p.segments : [];
+            const hasCorruptedOcrOrGibberish = rawSegments.some(
+              (s) =>
+                s.id.startsWith('ocr-seg-') ||
+                (s.words || []).some((w) => isGibberishToken(w.text))
+            );
+            const baseSegments = hasCorruptedOcrOrGibberish
+              ? p.isCustomUpload
+                ? []
+                : HYDRATED_INITIAL_SEGMENTS
+              : rawSegments;
+            const cleanedSegments = hasEnglishTranslatedHindiBug(baseSegments)
+              ? upgradeSegmentsToHinglishMultiScript(baseSegments)
+              : baseSegments;
+
+            return {
+              ...p,
+              videoUrl:
+                p.videoUrl === '/assets/terrace_reel.mp4'
+                  ? '/assets/raw_take.mp4'
+                  : p.videoUrl,
+              segments: cleanedSegments,
+              detectedTexts: (p.detectedTexts || []).filter(
+                (d) =>
+                  d.id !== 'ocr-init-1' &&
+                  d.id !== 'ocr-init-2' &&
+                  !isOcrOrCaptionGibberish(d.text) &&
+                  (d.confidence ?? 80) >= 68
+              ),
+              overlays: (p.overlays || []).filter((o) => o.id !== 'ov-init-1'),
+            };
+          });
         }
       }
     } catch {
@@ -313,9 +308,17 @@ export default function App() {
   const [playbackRate, setPlaybackRate] = useState<number>(1);
 
   // Caption & Template State
-  const [segments, setSegments] = useState<CaptionSegment[]>(
-    currentProject?.segments || HYDRATED_INITIAL_SEGMENTS
-  );
+  const [segments, setSegments] = useState<CaptionSegment[]>(() => {
+    const raw =
+      currentProject?.segments && currentProject.segments.length > 0
+        ? currentProject.segments
+        : currentProject?.isCustomUpload
+        ? []
+        : HYDRATED_INITIAL_SEGMENTS;
+    return hasEnglishTranslatedHindiBug(raw)
+      ? upgradeSegmentsToHinglishMultiScript(raw)
+      : raw;
+  });
   const [linesMode, setLinesMode] = useState<1 | 2>(2);
   const [activeScript, setActiveScript] = useState<string>('hinglish');
   const [pauseMode, setPauseMode] = useState<'Off' | 'Natural' | 'Tight'>('Off');
@@ -399,6 +402,9 @@ export default function App() {
   >(null);
   const [ocrProgress, setOcrProgress] = useState<OcrScanProgress | null>(null);
   const [ocrError, setOcrError] = useState<string | null>(null);
+  const [aiCaptionProgress, setAiCaptionProgress] =
+    useState<AiCaptionProgress | null>(null);
+  const [aiCaptionError, setAiCaptionError] = useState<string | null>(null);
   const [frameThumbnails, setFrameThumbnails] = useState<string[]>(
     currentProject?.frameThumbnails || []
   );
@@ -452,38 +458,18 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  // Rehydrate any custom uploaded video blobs from IndexedDB on mount
+  // Guarantee that when Hinglish/Devanagari is active, any segments containing translated English phrases are upgraded to Romanized Hinglish
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      for (const proj of projects) {
-        if (
-          proj.isCustomUpload &&
-          !hydratedBlobUrlsRef.current.has(proj.id)
-        ) {
-          const blob = await loadVideoBlobFromIdb(proj.id);
-          if (blob && !cancelled) {
-            const freshUrl = URL.createObjectURL(blob);
-            hydratedBlobUrlsRef.current.add(proj.id);
-            setProjects((prev) =>
-              prev.map((p) =>
-                p.id === proj.id ? { ...p, videoUrl: freshUrl } : p
-              )
-            );
-            if (proj.id === activeProjectId) {
-              setActiveMediaAsset((prev) => ({
-                ...prev,
-                videoUrl: freshUrl,
-              }));
-            }
-          }
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeProjectId, projects.length]);
+    if (activeScript !== 'english' && hasEnglishTranslatedHindiBug(segments)) {
+      const fixed = upgradeSegmentsToHinglishMultiScript(segments);
+      setSegments(fixed);
+      setProjects((prev) =>
+        prev.map((p) =>
+          p.id === activeProjectId ? { ...p, segments: fixed } : p
+        )
+      );
+    }
+  }, [segments, activeScript, activeProjectId]);
 
   // Keep current project state synced into `projects` array and `localStorage`
   useEffect(() => {
@@ -717,7 +703,12 @@ export default function App() {
         xOffset: Number.isFinite(rawOverrides?.xOffset) ? rawOverrides.xOffset : 50,
       });
       setAdjustments(target.adjustments || DEFAULT_ADJUSTMENTS);
-      setSegments(target.segments || HYDRATED_INITIAL_SEGMENTS);
+      const rawTargetSegs = target.segments || HYDRATED_INITIAL_SEGMENTS;
+      const cleanTargetSegs =
+        activeScript !== 'english' && hasEnglishTranslatedHindiBug(rawTargetSegs)
+          ? upgradeSegmentsToHinglishMultiScript(rawTargetSegs)
+          : rawTargetSegs;
+      setSegments(cleanTargetSegs);
       setOverlays(target.overlays || []);
       setDetectedTexts(target.detectedTexts || []);
       setFrameThumbnails(target.frameThumbnails || []);
@@ -781,7 +772,11 @@ export default function App() {
 
   // Run Real Automatic OCR Text Detection on a Video URL
   const handleRunOcrScanOnVideo = useCallback(
-    async (videoUrlToScan?: string, knownDuration?: number) => {
+    async (
+      videoUrlToScan?: string,
+      knownDuration?: number,
+      syncToCaptions = false
+    ) => {
       const targetUrl = videoUrlToScan || activeMediaAsset.videoUrl;
       if (!targetUrl) return;
       setIsPlaying(false);
@@ -806,11 +801,13 @@ export default function App() {
 
         setDetectedTexts(items);
         if (items.length > 0) {
-          setSelectedDetectedTextId(items[0].id);
-          setCurrentTime(Number((items[0].startTime + 0.1).toFixed(2)));
-          const ocrSegments = convertDetectedTextsToCaptionSegments(items);
-          if (ocrSegments.length > 0) {
-            setSegments(ocrSegments);
+          setSelectedDetectedTextId(null);
+          if (syncToCaptions) {
+            setCurrentTime(Number((items[0].startTime + 0.1).toFixed(2)));
+            const ocrSegments = convertDetectedTextsToCaptionSegments(items);
+            if (ocrSegments.length > 0) {
+              setSegments(ocrSegments);
+            }
           }
         }
         setOcrProgress(null);
@@ -833,9 +830,155 @@ export default function App() {
     [activeMediaAsset.videoUrl, duration]
   );
 
+  // Generate synchronized word-by-word captions from video audio/frames via Gemini API + Whisper ASR
+  const handleGenerateAiCaptions = useCallback(
+    async (options?: {
+      videoSource?: File | Blob | string;
+      videoUrl?: string;
+      knownDuration?: number;
+      customSpokenScript?: string;
+      projectIdToUpdate?: string;
+      fileName?: string;
+    }) => {
+      const targetUrl =
+        options?.videoUrl ||
+        activeMediaAsset.videoUrl ||
+        '/assets/raw_take.mp4';
+      const targetDuration = options?.knownDuration || duration || 6.0;
+      let sourceToUse: File | Blob | string = options?.videoSource || targetUrl;
+
+      if (!options?.videoSource && currentProject?.isCustomUpload) {
+        const idbBlob = await loadVideoBlobFromIdb(currentProject.id);
+        if (idbBlob) {
+          sourceToUse = idbBlob;
+        }
+      }
+
+      setIsPlaying(false);
+      setAiCaptionError(null);
+      setAiCaptionProgress({
+        phase: 'extracting_audio',
+        percent: 12,
+        statusMessage: 'Extracting spoken audio from video...',
+      });
+
+      try {
+        const result = await generateAiCaptionsFromVideo({
+          videoSource: sourceToUse,
+          videoUrlForFrames: targetUrl,
+          duration: targetDuration,
+          scriptId: activeScript,
+          customSpokenScript: options?.customSpokenScript,
+          linesMode,
+          fileName:
+            options?.fileName || currentProject?.videoFileName || 'video.mp4',
+          onProgress: (prog) => setAiCaptionProgress(prog),
+        });
+
+        if (result.segments.length > 0) {
+          const finalSegs =
+            activeScript !== 'english' && hasEnglishTranslatedHindiBug(result.segments)
+              ? upgradeSegmentsToHinglishMultiScript(result.segments)
+              : result.segments;
+          pushHistory();
+          setSegments(finalSegs);
+          setCurrentTime(
+            Number(Math.max(0.05, finalSegs[0].start + 0.04).toFixed(2))
+          );
+          setLeftTab('captions');
+          const targetProjId = options?.projectIdToUpdate || currentProject?.id;
+          if (targetProjId) {
+            setProjects((prev) =>
+              prev.map((p) =>
+                p.id === targetProjId
+                  ? { ...p, segments: finalSegs }
+                  : p
+              )
+            );
+          }
+        }
+        setTimeout(() => {
+          setAiCaptionProgress(null);
+        }, 900);
+      } catch (err) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'Failed to generate AI captions from video.';
+        setAiCaptionError(msg);
+        setAiCaptionProgress({
+          phase: 'error',
+          percent: 0,
+          statusMessage: msg,
+        });
+      }
+    },
+    [
+      activeMediaAsset.videoUrl,
+      duration,
+      currentProject,
+      activeScript,
+      linesMode,
+      pushHistory,
+    ]
+  );
+
+  // Rehydrate any custom uploaded video blobs from IndexedDB on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const proj of projects) {
+        if (
+          proj.isCustomUpload &&
+          !hydratedBlobUrlsRef.current.has(proj.id)
+        ) {
+          const blob = await loadVideoBlobFromIdb(proj.id);
+          if (blob && !cancelled) {
+            const freshUrl = URL.createObjectURL(blob);
+            hydratedBlobUrlsRef.current.add(proj.id);
+            setProjects((prev) =>
+              prev.map((p) =>
+                p.id === proj.id ? { ...p, videoUrl: freshUrl } : p
+              )
+            );
+            if (proj.id === activeProjectId) {
+              setActiveMediaAsset((prev) => ({
+                ...prev,
+                videoUrl: freshUrl,
+              }));
+              const needsRetranscribe =
+                !proj.segments ||
+                proj.segments.length === 0 ||
+                proj.segments.some((s) =>
+                  (s.words || []).some((w) => w.en === 'designing' || w.en === 'focusing')
+                );
+              if (needsRetranscribe) {
+                void handleGenerateAiCaptions({
+                  videoSource: blob,
+                  videoUrl: freshUrl,
+                  knownDuration: proj.duration,
+                  projectIdToUpdate: proj.id,
+                  fileName: proj.videoFileName,
+                });
+              }
+            }
+          }
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectId, projects.length, handleGenerateAiCaptions]);
+
   // Create a brand new separate editing project from an uploaded File
   const handleCreateProjectFromFile = useCallback(
-    async (file: File, customProjectName?: string, autoRunOcr = true) => {
+    async (
+      file: File,
+      customProjectName?: string,
+      autoRunOcr = false,
+      customSpokenScript?: string
+    ) => {
       setIsPlaying(false);
       const newProjId = `proj-${Date.now()}-${Math.random()
         .toString(36)
@@ -850,12 +993,13 @@ export default function App() {
       await saveVideoBlobToIdb(newProjId, file);
 
       const meta = await extractVideoMetadataAndFilmstrip(objectUrl);
-      const defaultTpl = findTemplate('captik_glow');
+      const chosenTpl = activeTemplate || findTemplate('look_garnet');
       const initialOverrides: CustomStyleOverrides = {
-        ...createInitialOverrides(defaultTpl),
-        behindSubject: false,
-        yOffset: 84,
-        xOffset: 50,
+        ...createInitialOverrides(chosenTpl),
+        ...styleOverrides,
+        behindSubject: styleOverrides?.behindSubject ?? false,
+        yOffset: styleOverrides?.yOffset ?? 76,
+        xOffset: styleOverrides?.xOffset ?? 50,
       };
 
       const newProj = createNewProjectRecord({
@@ -867,31 +1011,10 @@ export default function App() {
         isCustomUpload: true,
         duration: meta.duration,
         aspectRatio: meta.aspectRatio,
-        templateId: defaultTpl.id,
+        templateId: chosenTpl.id,
         styleOverrides: initialOverrides,
         adjustments: DEFAULT_ADJUSTMENTS,
-        segments: [
-          {
-            id: `seg-upload-${Date.now()}`,
-            start: 0.1,
-            end: Math.min(meta.duration, 2.8),
-            behindSubject: false,
-            words: cleanName
-              .split(/\s+/)
-              .slice(0, 4)
-              .map((word, idx) => ({
-                id: `w-up-${idx}`,
-                text: word,
-                hiDeva: word,
-                ta: word,
-                bn: word,
-                en: word,
-                start: Number((0.1 + idx * 0.5).toFixed(2)),
-                end: Number((0.6 + idx * 0.5).toFixed(2)),
-                emphasis: idx === 0 ? 'amber' : 'none',
-              })),
-          },
-        ],
+        segments: [],
         overlays: [],
         detectedTexts: [],
         ocrStatus: autoRunOcr ? 'scanning' : 'idle',
@@ -909,7 +1032,7 @@ export default function App() {
         posterUrl: meta.posterDataUrl,
         accentColor: '#f5a524',
         speakerName: 'Uploaded Video',
-        languageLabel: 'Auto OCR',
+        languageLabel: 'Gemini AI + OCR',
         words: MEDIA_LIBRARY_ASSETS[0].words,
       };
 
@@ -917,13 +1040,15 @@ export default function App() {
       setActiveProjectId(newProjId);
       setProjectName(cleanName);
       setAspectRatio(meta.aspectRatio);
-      setActiveTemplate(defaultTpl);
+      setActiveTemplate(chosenTpl);
       setStyleOverrides(initialOverrides);
       setSourceMediaDuration(meta.duration);
       setDuration(meta.duration);
-      const initV = newProj.videoClips || createInitialVideoClips(meta.duration, cleanName);
+      const initV =
+        newProj.videoClips || createInitialVideoClips(meta.duration, cleanName);
       const initA =
-        newProj.audioClips || createInitialAudioClips(initV, `${cleanName} Audio`);
+        newProj.audioClips ||
+        createInitialAudioClips(initV, `${cleanName} Audio`);
       setVideoClips(initV);
       setAudioClips(initA);
       setIsAudioLinked(true);
@@ -931,23 +1056,38 @@ export default function App() {
       setSelectedTrackType('video');
       setCurrentTime(0.2);
       setActiveMediaAsset(customAsset);
-      setSegments(newProj.segments);
+      setSegments([]);
       setOverlays([]);
       setDetectedTexts([]);
       setSelectedDetectedTextId(null);
       setFrameThumbnails(meta.filmstripDataUrls);
       setActiveView('editor');
-      setLeftTab('text');
+      setLeftTab('captions');
+
+      // Automatically transcribe spoken audio in the uploaded video using Gemini AI
+      void handleGenerateAiCaptions({
+        videoSource: file,
+        videoUrl: objectUrl,
+        knownDuration: meta.duration,
+        customSpokenScript,
+        projectIdToUpdate: newProjId,
+        fileName: file.name,
+      });
 
       if (autoRunOcr) {
-        // Trigger OCR asynchronously so the modal closes immediately and the editor shows live progress
-        void handleRunOcrScanOnVideo(objectUrl, meta.duration);
+        // Also scan visual frames for burned-in OCR text in the background without overwriting AI speech captions
+        void handleRunOcrScanOnVideo(objectUrl, meta.duration, false);
       }
     },
-    [activeTemplate, handleRunOcrScanOnVideo]
+    [
+      activeTemplate,
+      styleOverrides,
+      handleGenerateAiCaptions,
+      handleRunOcrScanOnVideo,
+    ]
   );
 
-  // Generate a real custom video file with burned-in text and import it as a new project
+  // Generate a real custom video file with spoken voice & burned-in text and import it as a new project
   const handleGenerateAndImportSampleVideo = useCallback(
     async (
       customTitle: string,
@@ -958,7 +1098,13 @@ export default function App() {
         customTitle,
         sceneTexts
       );
-      await handleCreateProjectFromFile(file, customTitle, autoRunOcr);
+      const scriptText = sceneTexts.filter((t) => t.trim().length > 0).join('. ');
+      await handleCreateProjectFromFile(
+        file,
+        customTitle,
+        autoRunOcr,
+        scriptText
+      );
     },
     [handleCreateProjectFromFile]
   );
@@ -1020,7 +1166,7 @@ export default function App() {
     }
   }, [detectedTexts, pushHistory]);
 
-  // Real Video Export Handler (Includes Edited Video/Audio Timeline & Human Segmentation)
+  // Real Video Export Handler (Includes Edited Video/Audio Timeline & Selected Export Quality)
   const handleRunRealVideoExport = useCallback(
     async (onProgress: (pct: number) => void): Promise<Blob> => {
       setIsPlaying(false);
@@ -1028,6 +1174,7 @@ export default function App() {
         videoUrl: activeMediaAsset.videoUrl || '/assets/terrace_reel.mp4',
         duration,
         aspectRatio,
+        quality,
         segments,
         activeScript,
         activeTemplate,
@@ -1044,6 +1191,7 @@ export default function App() {
       activeMediaAsset.videoUrl,
       duration,
       aspectRatio,
+      quality,
       segments,
       activeScript,
       activeTemplate,
@@ -1087,7 +1235,10 @@ export default function App() {
   const handleChangePauseMode = (mode: 'Off' | 'Natural' | 'Tight') => {
     pushHistory();
     setPauseMode(mode);
-    const base = hydrateSegmentsFromWords(activeMediaAsset.words);
+    const base =
+      currentProject?.isCustomUpload && segments.length > 0
+        ? segments
+        : hydrateSegmentsFromWords(activeMediaAsset.words);
     if (mode === 'Off') {
       setSegments(rebuildSegmentsByLineMode(base, linesMode));
     } else {
@@ -1119,6 +1270,7 @@ export default function App() {
     newText: string
   ) => {
     pushHistory();
+    const multi = transliterateWordMultiScript(newText);
     setSegments((prev) =>
       prev.map((seg) => {
         if (seg.id !== segmentId) return seg;
@@ -1128,11 +1280,15 @@ export default function App() {
             w.id === wordId
               ? {
                   ...w,
-                  text: newText,
-                  hiDeva: newText,
-                  ta: newText,
-                  bn: newText,
-                  en: newText,
+                  text:
+                    activeScript === 'hinglish' ? newText : multi.text || newText,
+                  hiDeva:
+                    activeScript === 'devanagari' || activeScript === 'hi-deva'
+                      ? newText
+                      : multi.hiDeva || newText,
+                  ta: multi.text || newText,
+                  bn: multi.text || newText,
+                  en: activeScript === 'english' ? newText : multi.en || newText,
                 }
               : w
           ),
@@ -1140,6 +1296,34 @@ export default function App() {
       })
     );
   };
+
+  const handleChangeScript = useCallback(
+    (scriptId: string) => {
+      setActiveScript(scriptId);
+      if (segments.length > 0) {
+        let updated = segments;
+        if (scriptId !== 'english' && hasEnglishTranslatedHindiBug(segments)) {
+          updated = upgradeSegmentsToHinglishMultiScript(segments);
+        }
+        const localized = updated.map((seg) => ({
+          ...seg,
+          words: seg.words.map((w) => ({
+            ...w,
+            text: getWordTextForScript(w, scriptId),
+            hiDeva: getWordTextForScript(w, 'devanagari'),
+            en: getWordTextForScript(w, 'english'),
+          })),
+        }));
+        setSegments(localized);
+        setProjects((prev) =>
+          prev.map((p) =>
+            p.id === activeProjectId ? { ...p, segments: localized } : p
+          )
+        );
+      }
+    },
+    [segments, activeProjectId]
+  );
 
   const handleSplitSegment = (segmentId: string, wordIndex: number) => {
     pushHistory();
@@ -1225,7 +1409,7 @@ export default function App() {
   };
 
   const handleUploadCustomVideo = (file: File) => {
-    handleCreateProjectFromFile(file, undefined, true);
+    handleCreateProjectFromFile(file, undefined, false);
   };
 
   const handleAddTextOverlay = (
@@ -1337,9 +1521,13 @@ export default function App() {
         temperature: 12,
       }));
     } else if (toolId === 'translate') {
-      setActiveScript((prev) =>
-        prev === 'hinglish' ? 'devanagari' : 'hinglish'
-      );
+      const nextScript =
+        activeScript === 'hinglish'
+          ? 'english'
+          : activeScript === 'english'
+          ? 'devanagari'
+          : 'hinglish';
+      handleChangeScript(nextScript);
     }
   };
 
@@ -1577,6 +1765,11 @@ export default function App() {
       ocrProgress.phase !== 'completed' &&
       ocrProgress.phase !== 'error'
   );
+  const isGeneratingCaptions = Boolean(
+    aiCaptionProgress &&
+      aiCaptionProgress.phase !== 'completed' &&
+      aiCaptionProgress.phase !== 'error'
+  );
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-[#0b0b0c] text-[#f3efe7] flex flex-col font-sans antialiased">
@@ -1602,9 +1795,11 @@ export default function App() {
           handleChangeView('editor');
         }}
         onOpenNewProjectModal={() => setNewProjectModalOpen(true)}
-        onTriggerOcrScan={() => handleRunOcrScanOnVideo()}
+        onTriggerOcrScan={() => handleRunOcrScanOnVideo(undefined, undefined, false)}
         isOcrScanning={isOcrScanning}
         detectedTextCount={detectedTexts.length}
+        onTriggerAiCaptions={() => void handleGenerateAiCaptions()}
+        isGeneratingCaptions={isGeneratingCaptions}
         onSaveProject={handleSaveProjectExplicit}
       />
 
@@ -1620,7 +1815,7 @@ export default function App() {
               linesMode={linesMode}
               onChangeLinesMode={handleChangeLinesMode}
               activeScript={activeScript}
-              onChangeScript={setActiveScript}
+              onChangeScript={handleChangeScript}
               pauseMode={pauseMode}
               onChangePauseMode={handleChangePauseMode}
               onSeekTo={(sec) => setCurrentTime(sec)}
@@ -1681,9 +1876,16 @@ export default function App() {
               onDeleteDetectedText={handleDeleteDetectedText}
               onAddManualDetectedText={handleAddManualDetectedText}
               onSyncOcrToCaptions={handleSyncOcrToCaptions}
-              onTriggerOcrScan={() => handleRunOcrScanOnVideo()}
+              onTriggerOcrScan={() =>
+                handleRunOcrScanOnVideo(undefined, undefined, false)
+              }
               ocrProgress={ocrProgress}
               ocrError={ocrError}
+              onTriggerAiCaptions={(customSpokenScript) =>
+                void handleGenerateAiCaptions({ customSpokenScript })
+              }
+              aiCaptionProgress={aiCaptionProgress}
+              aiCaptionError={aiCaptionError}
               activeTemplate={activeTemplate}
               onSelectTemplate={handleSelectTemplate}
             />
@@ -1726,8 +1928,11 @@ export default function App() {
               }}
               onUpdateDetectedText={handleUpdateDetectedText}
               onDeleteDetectedText={handleDeleteDetectedText}
-              onTriggerOcrScan={() => handleRunOcrScanOnVideo()}
+              onTriggerOcrScan={() =>
+                handleRunOcrScanOnVideo(undefined, undefined, false)
+              }
               ocrProgress={ocrProgress}
+              aiCaptionProgress={aiCaptionProgress}
               onOpenNewProjectModal={() => setNewProjectModalOpen(true)}
               playbackRate={playbackRate}
             />
@@ -1761,7 +1966,17 @@ export default function App() {
           <BottomTimeline
             currentTime={currentTime}
             duration={duration}
-            onSeekTo={(sec) => setCurrentTime(sec)}
+            onSeekTo={(sec) => {
+              setCurrentTime(sec);
+              const vid = document.querySelector('video');
+              if (vid) {
+                try {
+                  vid.currentTime = sec;
+                } catch {
+                  // ignore
+                }
+              }
+            }}
             segments={segments}
             activeSegmentId={activeSegmentId}
             activeScript={activeScript}

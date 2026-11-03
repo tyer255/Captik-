@@ -10,6 +10,11 @@ import {
   createInitialAudioClips,
   DEFAULT_ADJUSTMENTS,
 } from './editorLogic.ts';
+import {
+  isGibberishToken,
+  cleanSpokenScriptText,
+  transliterateWordMultiScript,
+} from './aiCaptionParser.ts';
 
 export interface RawFrameOcrBlock {
   timestamp: number;
@@ -139,6 +144,18 @@ export function computeTextSimilarity(a: string, b: string): number {
 }
 
 /**
+ * Checks if an OCR text line or caption string is mostly gibberish noise (e.g. `61Y2`, `YY3`, `APRD13`, `1NI2`, `XOO`).
+ */
+export function isOcrOrCaptionGibberish(rawText: string): boolean {
+  const cleaned = normalizeOcrText(rawText);
+  if (!cleaned || cleaned.length < 2) return true;
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const validCount = tokens.filter((t) => !isGibberishToken(t)).length;
+  return validCount === 0 || validCount / tokens.length < 0.5;
+}
+
+/**
  * Merges raw frame-by-frame OCR detections into continuous timed DetectedVideoTextItem objects.
  */
 export function mergeFrameOcrDetections(
@@ -149,17 +166,17 @@ export function mergeFrameOcrDetections(
   const safeDuration = Math.max(1, videoDuration || 6);
   const halfStep = Math.max(0.25, sampleStepSec / 2);
 
-  // Filter out noise / 1-char artifacts
+  // Filter out noise, low-confidence blocks, and gibberish alphanumeric strings (61Y2, YY3, APRD13, 1NI2, XOO)
   const validBlocks = frameDetections
     .map((b) => ({
       ...b,
-      text: normalizeOcrText(b.text),
+      text: cleanSpokenScriptText(normalizeOcrText(b.text)),
     }))
     .filter((b) => {
       if (b.text.length < 2) return false;
-      // Require at least two alphanumeric/script characters
+      if (isOcrOrCaptionGibberish(b.text)) return false;
       const alphaCount = (b.text.match(/[\p{L}\p{N}]/gu) || []).length;
-      return alphaCount >= 2 && b.confidence >= 25;
+      return alphaCount >= 2 && b.confidence >= 68;
     })
     .sort((a, b) => a.timestamp - b.timestamp || a.y - b.y);
 
@@ -224,45 +241,57 @@ export function mergeFrameOcrDetections(
 export function convertDetectedTextsToCaptionSegments(
   items: DetectedVideoTextItem[]
 ): CaptionSegment[] {
-  const activeItems = items.filter((item) => !item.isRemoved && item.text.trim().length > 0);
+  const activeItems = items.filter(
+    (item) =>
+      !item.isRemoved &&
+      item.text.trim().length > 0 &&
+      !isOcrOrCaptionGibberish(item.text)
+  );
   if (activeItems.length === 0) return [];
 
   let wordSeq = 1;
-  return activeItems.map((item, segIdx) => {
-    const rawTokens = item.text.trim().split(/\s+/).filter(Boolean);
-    const duration = Math.max(0.4, item.endTime - item.startTime);
-    const perWord = duration / Math.max(1, rawTokens.length);
+  return activeItems
+    .map((item, segIdx) => {
+      const rawTokens = cleanSpokenScriptText(item.text)
+        .split(/\s+/)
+        .filter((t) => Boolean(t) && !isGibberishToken(t));
+      if (rawTokens.length === 0) return null;
 
-    const words: CaptionWord[] = rawTokens.map((tok, wIdx) => {
-      const start = Number((item.startTime + wIdx * perWord).toFixed(2));
-      const end = Number((item.startTime + (wIdx + 1) * perWord).toFixed(2));
-      const emphasis: 'none' | 'green' | 'amber' =
-        wIdx === rawTokens.length - 1 && rawTokens.length > 1
-          ? 'amber'
-          : wIdx === 0 && rawTokens.length > 2
-          ? 'green'
-          : 'none';
+      const duration = Math.max(0.4, item.endTime - item.startTime);
+      const perWord = duration / Math.max(1, rawTokens.length);
+
+      const words: CaptionWord[] = rawTokens.map((tok, wIdx) => {
+        const start = Number((item.startTime + wIdx * perWord).toFixed(2));
+        const end = Number((item.startTime + (wIdx + 1) * perWord).toFixed(2));
+        const emphasis: 'none' | 'green' | 'amber' =
+          wIdx === rawTokens.length - 1 && rawTokens.length > 1
+            ? 'amber'
+            : wIdx === 0 && rawTokens.length > 2
+            ? 'green'
+            : 'none';
+        const multi = transliterateWordMultiScript(tok);
+        return {
+          id: `ocr-w-${wordSeq++}`,
+          text: multi.text || tok,
+          hiDeva: multi.hiDeva || tok,
+          ta: tok,
+          bn: tok,
+          en: multi.en || tok,
+          start,
+          end,
+          emphasis,
+        };
+      });
+
       return {
-        id: `ocr-w-${wordSeq++}`,
-        text: tok,
-        hiDeva: tok,
-        ta: tok,
-        bn: tok,
-        en: tok,
-        start,
-        end,
-        emphasis,
+        id: `ocr-seg-${segIdx + 1}`,
+        start: item.startTime,
+        end: item.endTime,
+        words,
+        behindSubject: false,
       };
-    });
-
-    return {
-      id: `ocr-seg-${segIdx + 1}`,
-      start: item.startTime,
-      end: item.endTime,
-      words,
-      behindSubject: segIdx % 2 === 0,
-    };
-  });
+    })
+    .filter((seg): seg is CaptionSegment => seg !== null);
 }
 
 /**

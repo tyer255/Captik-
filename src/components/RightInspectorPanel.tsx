@@ -11,6 +11,8 @@ import {
   RotateCcw,
   Film,
   LayoutGrid,
+  ChevronRight,
+  ChevronLeft,
 } from 'lucide-react';
 import {
   TEMPLATES,
@@ -59,6 +61,7 @@ export const RightInspectorPanel: React.FC<RightInspectorPanelProps> = ({
   segmentCount,
   wordCount,
 }) => {
+  const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const [presetMode, setPresetMode] = useState<'captik' | 'my'>('captik');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -93,38 +96,75 @@ export const RightInspectorPanel: React.FC<RightInspectorPanelProps> = ({
     setTimeout(() => setJustSavedToast(false), 1800);
   };
 
+  if (isCollapsed) {
+    return (
+      <aside
+        onClick={() => setIsCollapsed(false)}
+        title="Open Inspector Panel"
+        className="hidden md:flex w-9 bg-[#0e0e10] hover:bg-[#15151a] border-l border-white/[0.07] flex-col items-center py-3 justify-between shrink-0 select-none z-20 cursor-pointer transition-colors"
+      >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsCollapsed(false);
+          }}
+          className="w-7 h-7 rounded-md bg-white/[0.06] hover:bg-[#f5a524] hover:text-black text-zinc-400 flex items-center justify-center transition-colors cursor-pointer"
+          title="Expand Inspector"
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </button>
+        <div className="[writing-mode:vertical-rl] rotate-180 text-[10px] font-bold uppercase tracking-widest text-zinc-500 hover:text-[#f5a524]">
+          Inspector · {activeTab}
+        </div>
+        <Sliders className="w-3.5 h-3.5 text-[#f5a524]" />
+      </aside>
+    );
+  }
+
   return (
     <aside className="hidden md:flex w-[290px] xl:w-[340px] bg-[#0e0e10] border-l border-white/[0.07] flex-col h-full shrink-0 select-none z-20 overflow-hidden">
-      {/* Top 4 Inspector Tabs (Templates / Style | Customize | Text | Project) */}
-      <div className="h-10 px-2 border-b border-white/[0.07] grid grid-cols-4 gap-1 items-center bg-[#0b0b0d] shrink-0">
-        {(
-          [
-            { id: 'templates', label: 'Templates' },
-            { id: 'customize', label: 'Customize' },
-            { id: 'text', label: 'Text' },
-            { id: 'project', label: 'Project' },
-          ] as const
-        ).map((tab) => {
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              data-testid={`right-tab-${tab.id}`}
-              onClick={() => onSelectTab(tab.id)}
-              className={`py-2 text-xs font-semibold transition-all cursor-pointer relative ${
-                isActive
-                  ? 'text-white'
-                  : 'text-zinc-500 hover:text-zinc-200'
-              }`}
-            >
-              <span>{tab.label}</span>
-              {isActive && (
-                <span className="absolute bottom-0 inset-x-3 h-[2px] bg-[#f5a524] rounded-full" />
-              )}
-            </button>
-          );
-        })}
+      {/* Top 4 Inspector Tabs + Collapse Button */}
+      <div className="h-10 px-2 border-b border-white/[0.07] flex items-center justify-between bg-[#0b0b0d] shrink-0">
+        <div className="grid grid-cols-4 gap-1 flex-1 items-center">
+          {(
+            [
+              { id: 'templates', label: 'Templates' },
+              { id: 'customize', label: 'Customize' },
+              { id: 'text', label: 'Text' },
+              { id: 'project', label: 'Project' },
+            ] as const
+          ).map((tab) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                data-testid={`right-tab-${tab.id}`}
+                onClick={() => onSelectTab(tab.id)}
+                className={`py-2 text-xs font-semibold transition-all cursor-pointer relative text-center ${
+                  isActive
+                    ? 'text-white'
+                    : 'text-zinc-500 hover:text-zinc-200'
+                }`}
+              >
+                <span>{tab.label}</span>
+                {isActive && (
+                  <span className="absolute bottom-0 inset-x-2 h-[2px] bg-[#f5a524] rounded-full" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setIsCollapsed(true)}
+          title="Collapse Inspector Panel"
+          className="w-6 h-6 ml-1 rounded hover:bg-white/[0.08] text-zinc-500 hover:text-zinc-200 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+        >
+          <ChevronRight className="w-3.5 h-3.5" />
+        </button>
       </div>
 
       {/* ==================== TAB 1: TEMPLATES / STYLES (106 Authentic Captik Templates) ==================== */}

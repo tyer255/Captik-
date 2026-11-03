@@ -716,10 +716,54 @@ export async function generateCustomVideoWithEmbeddedText(
   }
 
   const stream = canvas.captureStream(30);
-  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+  let audioCtx: AudioContext | null = null;
+  let effectiveDurationSec = durationSec;
+
+  // Attempt to synthesize spoken voice audio for the scenes via /api/captions/tts
+  try {
+    const scriptText = scenes.map((s) => s.text).join('. ');
+    const ttsRes = await fetch('/api/captions/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: scriptText }),
+    });
+    if (ttsRes.ok) {
+      const ttsJson = (await ttsRes.json()) as { audioBase64?: string };
+      if (ttsJson.audioBase64) {
+        const binary = atob(ttsJson.audioBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const AudioCtxClass =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (AudioCtxClass) {
+          audioCtx = new AudioCtxClass();
+          const decodedBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+          effectiveDurationSec = Math.max(durationSec, Math.min(8, decodedBuffer.duration + 0.3));
+          const dest = audioCtx.createMediaStreamDestination();
+          const srcNode = audioCtx.createBufferSource();
+          srcNode.buffer = decodedBuffer;
+          srcNode.connect(dest);
+          const audioTrack = dest.stream.getAudioTracks()[0];
+          if (audioTrack) {
+            stream.addTrack(audioTrack);
+          }
+          srcNode.start(0);
+        }
+      }
+    }
+  } catch {
+    // Fallback to visual recording if TTS unavailable
+  }
+
+  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+    ? 'video/webm;codecs=vp9,opus'
+    : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+    ? 'video/webm;codecs=vp8,opus'
+    : MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
     ? 'video/webm;codecs=vp9'
-    : MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
-    ? 'video/webm;codecs=vp8'
     : 'video/webm';
 
   const recorder = new MediaRecorder(stream, {
@@ -740,7 +784,7 @@ export async function generateCustomVideoWithEmbeddedText(
 
   recorder.start(100);
 
-  const totalFrames = Math.round(durationSec * 20);
+  const totalFrames = Math.round(effectiveDurationSec * 20);
   for (let f = 0; f < totalFrames; f++) {
     const progress = f / totalFrames;
     const sceneIdx = Math.min(
@@ -780,24 +824,69 @@ export async function generateCustomVideoWithEmbeddedText(
     ctx.textBaseline = 'middle';
     ctx.fillText(scene.text, canvas.width / 2, boxY);
 
-    await new Promise((r) => setTimeout(r, 28));
+    await new Promise((r) => setTimeout(r, 45));
   }
 
   recorder.stop();
   const blob = await finished;
+  if (audioCtx) {
+    await audioCtx.close().catch(() => {});
+  }
   const safeFileName = `${title.replace(/\s+/g, '_')}.webm`;
   return new File([blob], safeFileName, { type: 'video/webm' });
 }
 
+export function getExportCanvasDimensions(
+  aspectRatio: '9:16' | '16:9' | '1:1' | '4:5',
+  quality: '720p' | '1080p' | '4K' = '1080p'
+): { width: number; height: number; videoBitsPerSecond: number } {
+  const shortEdge = quality === '4K' ? 1440 : quality === '720p' ? 720 : 1080;
+  const videoBitsPerSecond =
+    quality === '4K'
+      ? 28_000_000
+      : quality === '1080p'
+      ? 16_000_000
+      : 8_000_000;
+
+  if (aspectRatio === '16:9') {
+    return {
+      width: Math.round((shortEdge * 16) / 9),
+      height: shortEdge,
+      videoBitsPerSecond,
+    };
+  }
+  if (aspectRatio === '1:1') {
+    return {
+      width: shortEdge,
+      height: shortEdge,
+      videoBitsPerSecond,
+    };
+  }
+  if (aspectRatio === '4:5') {
+    return {
+      width: shortEdge,
+      height: Math.round((shortEdge * 5) / 4),
+      videoBitsPerSecond,
+    };
+  }
+  // Default 9:16 vertical reel
+  return {
+    width: shortEdge,
+    height: Math.round((shortEdge * 16) / 9),
+    videoBitsPerSecond,
+  };
+}
+
 /**
- * Renders the edited video (edited videoClips & audioClips timeline + color adjustments +
- * OCR replacements/masks + Human-Only Segmented "Behind You" effect + active Captik caption
- * template + timeline text overlays) into a downloadable WebM/MP4 Blob.
+ * Renders the FULL edited video (100% of duration without any early cutoff, at the exact
+ * user-selected quality 720p / 1080p / 4K, smooth continuous 60fps frame rendering with
+ * zero seek lag, and single-pass object-cover video drawing so two faces never appear).
  */
 export async function exportEditedVideoToBlob(params: {
   videoUrl: string;
   duration: number;
   aspectRatio: '9:16' | '16:9' | '1:1' | '4:5';
+  quality?: '720p' | '1080p' | '4K';
   segments: CaptionSegment[];
   detectedTexts: DetectedVideoTextItem[];
   activeScript: string;
@@ -813,6 +902,7 @@ export async function exportEditedVideoToBlob(params: {
     videoUrl,
     duration,
     aspectRatio,
+    quality = '1080p',
     segments,
     detectedTexts,
     activeScript,
@@ -825,41 +915,40 @@ export async function exportEditedVideoToBlob(params: {
   } = params;
 
   const { mapTimelineTimeToSourceVideo } = await import('./editorLogic');
-  const { HumanSegmentationTracker } = await import('./humanSegmentationEngine');
+  const { drawSourceObjectCover } = await import('./humanSegmentationEngine');
+
+  const { width: canvasW, height: canvasH, videoBitsPerSecond } =
+    getExportCanvasDimensions(aspectRatio, quality);
 
   const canvas = document.createElement('canvas');
-  if (aspectRatio === '16:9') {
-    canvas.width = 960;
-    canvas.height = 540;
-  } else if (aspectRatio === '1:1') {
-    canvas.width = 720;
-    canvas.height = 720;
-  } else if (aspectRatio === '4:5') {
-    canvas.width = 720;
-    canvas.height = 900;
-  } else {
-    canvas.width = 540;
-    canvas.height = 960;
-  }
+  canvas.width = canvasW;
+  canvas.height = canvasH;
 
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { alpha: false });
   if (!ctx) throw new Error('Canvas 2D context unavailable for export.');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
 
-  // Offscreen foreground canvas for Human-Only Segmentation compositing
-  const fgHumanCanvas = document.createElement('canvas');
-  fgHumanCanvas.width = canvas.width;
-  fgHumanCanvas.height = canvas.height;
-  const segmentationTracker = new HumanSegmentationTracker();
+  // Offscreen layer for "Behind You" hero text with silhouette occlusion cutout (never draws a second face!)
+  const behindLayerCanvas = document.createElement('canvas');
+  behindLayerCanvas.width = canvasW;
+  behindLayerCanvas.height = canvasH;
+  const behindLayerCtx = behindLayerCanvas.getContext('2d');
+
+  // Scale factor relative to 540px reference stage so typography scales crisply at 720p, 1080p, and 4K
+  const resScale = Math.min(canvasW, canvasH) / 540;
 
   const video = document.createElement('video');
   video.crossOrigin = 'anonymous';
-  video.muted = true;
   video.playsInline = true;
   video.preload = 'auto';
   video.src = videoUrl;
 
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Video load timeout during export')), 8000);
+    const timer = setTimeout(
+      () => reject(new Error('Video load timeout during export')),
+      12000
+    );
     video.onloadeddata = () => {
       clearTimeout(timer);
       resolve();
@@ -870,13 +959,354 @@ export async function exportEditedVideoToBlob(params: {
     };
   });
 
-  const stream = canvas.captureStream(30);
-  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-    ? 'video/webm;codecs=vp9'
-    : 'video/webm';
-  const recorder = new MediaRecorder(stream, {
-    mimeType,
-    videoBitsPerSecond: 3_500_000,
+  // Determine the FULL export duration (never cap at 6.5s!)
+  const nativeVideoDuration =
+    Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+  const clipsEndDuration =
+    videoClips.length > 0
+      ? Math.max(...videoClips.map((c) => c.timelineEnd || 0))
+      : 0;
+
+  const isSingleUntrimmedClip =
+    videoClips.length <= 1 &&
+    (!videoClips[0] ||
+      (videoClips[0].sourceStart <= 0.05 &&
+        (videoClips[0].speed || 1) === 1 &&
+        Math.abs((videoClips[0].timelineEnd || 0) - (duration || 0)) <= 0.25));
+
+  const exportDuration = Math.max(
+    0.5,
+    isSingleUntrimmedClip
+      ? Math.max(duration || 0, nativeVideoDuration, clipsEndDuration)
+      : clipsEndDuration || duration || nativeVideoDuration || 5
+  );
+
+  const filterCss = buildVideoFilterCss(adjustments, 'none');
+
+  const isBehindTemplate =
+    styleOverrides.behindSubject ||
+    activeTemplate.behind ||
+    Boolean(activeTemplate.lookSpec?.behindSubject) ||
+    Boolean(activeTemplate.lookSpec?.wholeBehind) ||
+    Boolean(activeTemplate.lookSpec?.impact);
+
+  // Pure single-pass frame renderer (draws video ONCE with object-cover, then overlays & captions)
+  const renderFrameAtTimelineTime = (timelineTime: number) => {
+    // LAYER 1: Original Background Video Frame drawn ONCE using exact object-cover crop
+    ctx.save();
+    ctx.fillStyle = '#070709';
+    ctx.fillRect(0, 0, canvasW, canvasH);
+    if (filterCss && filterCss !== 'none') {
+      ctx.filter = filterCss;
+    }
+    drawSourceObjectCover(ctx, video, canvasW, canvasH);
+    ctx.restore();
+
+    const { segment, activeWordIndex } = getActiveSegmentAndWord(
+      segments,
+      timelineTime
+    );
+    const isBehindFrame = isBehindTemplate || Boolean(segment?.behindSubject);
+
+    // LAYER 2: "Behind You" Hero Caption Layer (occluded around speaker's head/shoulders without duplicating face)
+    if (isBehindFrame && segment && segment.words.length > 0 && behindLayerCtx) {
+      const cx = (styleOverrides.xOffset / 100) * canvasW;
+      const behindY = Math.min(
+        canvasH * 0.34,
+        (styleOverrides.yOffset / 100) * canvasH * 0.45
+      );
+      const heroWord =
+        segment.words[activeWordIndex] ||
+        segment.words.find((w) => w.emphasis !== 'none') ||
+        segment.words[0];
+
+      if (heroWord) {
+        const heroTxt = getWordTextForScript(heroWord, activeScript);
+        const heroFontSize = Math.round(
+          68 *
+            resScale *
+            (styleOverrides.fontScale || 1) *
+            (styleOverrides.behindHeroScale || 1)
+        );
+
+        behindLayerCtx.clearRect(0, 0, canvasW, canvasH);
+        behindLayerCtx.save();
+        behindLayerCtx.font = `900 ${heroFontSize}px ${
+          activeTemplate.fontFamily || 'Anton, sans-serif'
+        }`;
+        behindLayerCtx.textAlign = 'center';
+        behindLayerCtx.textBaseline = 'middle';
+        behindLayerCtx.shadowColor = 'rgba(0,0,0,0.75)';
+        behindLayerCtx.shadowBlur = Math.round(18 * resScale);
+        behindLayerCtx.fillStyle =
+          styleOverrides.accentColor ||
+          activeTemplate.emphasisColor ||
+          '#F5A524';
+        behindLayerCtx.fillText(heroTxt.toUpperCase(), cx, behindY);
+
+        // Softly occlude center-bottom of the Behind-You word where the speaker's head/hair sits
+        behindLayerCtx.globalCompositeOperation = 'destination-out';
+        const headCenterX = canvasW * 0.5;
+        const headCenterY = behindY + heroFontSize * 0.42;
+        const cutRadius = Math.max(24, heroFontSize * 0.85);
+        const grad = behindLayerCtx.createRadialGradient(
+          headCenterX,
+          headCenterY,
+          cutRadius * 0.15,
+          headCenterX,
+          headCenterY,
+          cutRadius
+        );
+        grad.addColorStop(0, 'rgba(0,0,0,0.88)');
+        grad.addColorStop(0.65, 'rgba(0,0,0,0.45)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        behindLayerCtx.fillStyle = grad;
+        behindLayerCtx.beginPath();
+        behindLayerCtx.arc(headCenterX, headCenterY, cutRadius, 0, Math.PI * 2);
+        behindLayerCtx.fill();
+        behindLayerCtx.restore();
+
+        ctx.drawImage(behindLayerCanvas, 0, 0);
+      }
+    }
+
+    // LAYER 3A: Detected OCR Text masks and replacements active at timelineTime
+    const activeOcr = detectedTexts.filter(
+      (d) =>
+        timelineTime >= d.startTime - 0.05 && timelineTime <= d.endTime + 0.05
+    );
+    for (const item of activeOcr) {
+      if (item.maskOriginal || item.isRemoved) {
+        const mw = (item.width / 100) * canvasW;
+        const mh = (item.height / 100) * canvasH;
+        const mx = (item.originalX / 100) * canvasW - mw / 2;
+        const my = (item.originalY / 100) * canvasH - mh / 2;
+        ctx.fillStyle = item.bgColor || '#101218';
+        ctx.beginPath();
+        ctx.roundRect(
+          mx - 6 * resScale,
+          my - 4 * resScale,
+          mw + 12 * resScale,
+          mh + 8 * resScale,
+          8 * resScale
+        );
+        ctx.fill();
+      }
+      if (!item.isRemoved && item.text.trim()) {
+        const rx = (item.x / 100) * canvasW;
+        const ry = (item.y / 100) * canvasH;
+        const fontSize = Math.round(28 * resScale * (item.fontScale || 1));
+        ctx.font = `800 ${fontSize}px ${
+          activeTemplate.fontFamily || 'sans-serif'
+        }`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const metrics = ctx.measureText(item.text);
+        const padX = Math.round(16 * resScale);
+        const padY = Math.round(10 * resScale);
+        ctx.fillStyle = 'rgba(12, 13, 18, 0.86)';
+        ctx.beginPath();
+        ctx.roundRect(
+          rx - metrics.width / 2 - padX,
+          ry - fontSize / 2 - padY,
+          metrics.width + padX * 2,
+          fontSize + padY * 2,
+          Math.round(10 * resScale)
+        );
+        ctx.fill();
+
+        ctx.fillStyle =
+          item.textColor || styleOverrides.accentColor || '#F5A524';
+        ctx.fillText(item.text, rx, ry);
+      }
+    }
+
+    // LAYER 3B: Timeline Text & Element Overlays active at timelineTime
+    const activeOverlays = overlays.filter(
+      (ov) =>
+        ov.type !== 'sfx' && timelineTime >= ov.start && timelineTime <= ov.end
+    );
+    for (const ov of activeOverlays) {
+      const ox = ((ov.x ?? 50) / 100) * canvasW;
+      const oy = ((ov.y ?? 25) / 100) * canvasH;
+      const ovFontSize = Math.round(30 * resScale * (ov.scale || 1));
+      ctx.save();
+      ctx.font = `900 ${ovFontSize}px ${
+        activeTemplate.fontFamily || 'sans-serif'
+      }`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.shadowColor = 'rgba(0,0,0,0.8)';
+      ctx.shadowBlur = Math.round(10 * resScale);
+      ctx.fillStyle = ov.color || '#F5A524';
+      ctx.fillText(ov.label, ox, oy);
+      ctx.restore();
+    }
+
+    // LAYER 4: Foreground Synchronized Word-by-Word Captions at timelineTime
+    if (segment && segment.words.length > 0) {
+      const cx = ((styleOverrides.xOffset ?? 50) / 100) * canvasW;
+      const cy = ((styleOverrides.yOffset ?? 76) / 100) * canvasH;
+      const baseFontSize = Math.round(
+        30 * resScale * (styleOverrides.fontScale || 1)
+      );
+      const fontFamily = activeTemplate.fontFamily || 'Inter, sans-serif';
+
+      ctx.save();
+      ctx.font = `900 ${baseFontSize}px ${fontFamily}`;
+      ctx.textBaseline = 'middle';
+
+      const wordTokens = segment.words.map((w, idx) => {
+        const rawTxt = getWordTextForScript(w, activeScript);
+        const text =
+          styleOverrides.uppercase || activeTemplate.uppercase
+            ? rawTxt.toUpperCase()
+            : rawTxt;
+        const isActive = idx === activeWordIndex;
+        const isEmph = w.emphasis !== 'none';
+        return { text, isActive, isEmph };
+      });
+
+      const spaceW = Math.round(baseFontSize * 0.32);
+      const widths = wordTokens.map((wt) => {
+        ctx.font = `${wt.isActive || wt.isEmph ? 900 : 800} ${
+          wt.isActive ? Math.round(baseFontSize * 1.12) : baseFontSize
+        }px ${fontFamily}`;
+        return ctx.measureText(wt.text).width;
+      });
+      const totalLineW =
+        widths.reduce((acc, w) => acc + w, 0) +
+        Math.max(0, wordTokens.length - 1) * spaceW;
+
+      // Optional caption container box if template or styleOverrides has background opacity
+      if ((styleOverrides.bgOpacity ?? 0) > 10 || activeTemplate.boxBg) {
+        const boxPadX = Math.round(18 * resScale);
+        const boxPadY = Math.round(12 * resScale);
+        ctx.fillStyle =
+          activeTemplate.boxBg ||
+          `rgba(10, 12, 16, ${Math.min(
+            0.92,
+            (styleOverrides.bgOpacity || 75) / 100
+          )})`;
+        ctx.beginPath();
+        ctx.roundRect(
+          cx - totalLineW / 2 - boxPadX,
+          cy - baseFontSize / 2 - boxPadY,
+          totalLineW + boxPadX * 2,
+          baseFontSize + boxPadY * 2,
+          Math.round(12 * resScale)
+        );
+        ctx.fill();
+      }
+
+      let cursorX = cx - totalLineW / 2;
+      wordTokens.forEach((wt, idx) => {
+        const wWidth = widths[idx];
+        const wordFontPx = wt.isActive
+          ? Math.round(baseFontSize * 1.12)
+          : baseFontSize;
+        ctx.font = `900 ${wordFontPx}px ${fontFamily}`;
+        ctx.textAlign = 'left';
+
+        if (wt.isActive && activeTemplate.id === 'bubble') {
+          const pillPadX = Math.round(8 * resScale);
+          const pillPadY = Math.round(4 * resScale);
+          ctx.fillStyle =
+            styleOverrides.accentColor ||
+            activeTemplate.emphasisColor ||
+            '#48A680';
+          ctx.beginPath();
+          ctx.roundRect(
+            cursorX - pillPadX,
+            cy - wordFontPx / 2 - pillPadY,
+            wWidth + pillPadX * 2,
+            wordFontPx + pillPadY * 2,
+            Math.round(8 * resScale)
+          );
+          ctx.fill();
+        }
+
+        ctx.shadowColor = 'rgba(0,0,0,0.88)';
+        ctx.shadowBlur = Math.round(14 * resScale);
+        ctx.shadowOffsetY = Math.round(3 * resScale);
+
+        if ((styleOverrides.strokeWidth ?? 0) > 0) {
+          ctx.strokeStyle = activeTemplate.strokeColor || '#000000';
+          ctx.lineWidth = Math.max(
+            2,
+            Math.round((styleOverrides.strokeWidth || 2) * resScale * 0.8)
+          );
+          ctx.strokeText(wt.text, cursorX, cy);
+        }
+
+        ctx.fillStyle =
+          wt.isActive || wt.isEmph
+            ? styleOverrides.accentColor ||
+              activeTemplate.emphasisColor ||
+              '#F5A524'
+            : styleOverrides.primaryColor ||
+              activeTemplate.textColor ||
+              '#FFFFFF';
+        ctx.fillText(wt.text, cursorX, cy);
+
+        cursorX += wWidth + spaceW;
+      });
+
+      ctx.restore();
+    }
+  };
+
+  // Seek to initial start time and render Frame 0 before starting MediaRecorder
+  const initialMapped = mapTimelineTimeToSourceVideo(videoClips, 0);
+  await seekVideoTo(video, initialMapped.sourceTime);
+  renderFrameAtTimelineTime(0);
+  onProgress(5);
+
+  // Build combined video + audio stream (60fps canvas video + original audio track if available)
+  const canvasStream = canvas.captureStream(60);
+  const combinedTracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
+
+  // Try starting playback with audio enabled so captureStream includes the audio track
+  video.muted = false;
+  video.volume = 1.0;
+  let playingWithAudio = false;
+  try {
+    const vidStream: MediaStream | undefined =
+      (video as unknown as { captureStream?: () => MediaStream }).captureStream?.() ||
+      (video as unknown as { mozCaptureStream?: () => MediaStream }).mozCaptureStream?.();
+    if (vidStream) {
+      const audioTracks = vidStream.getAudioTracks();
+      if (audioTracks.length > 0) {
+        combinedTracks.push(audioTracks[0]);
+        playingWithAudio = true;
+      }
+    }
+  } catch {
+    // Fallback to video-only stream if cross-origin or browser blocks audio capture
+  }
+
+  const recordStream = new MediaStream(combinedTracks);
+
+  // Choose hardware-accelerated H.264 / MP4 or fast VP8 WebM instead of slow software VP9!
+  const candidateMimeTypes = [
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4;codecs=avc1',
+    'video/mp4',
+    'video/webm;codecs=h264,opus',
+    'video/webm;codecs=h264',
+    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp8',
+    'video/webm;codecs=vp9',
+    'video/webm',
+  ];
+  const chosenMimeType =
+    candidateMimeTypes.find((t) => MediaRecorder.isTypeSupported(t)) ||
+    'video/webm';
+
+  const recorder = new MediaRecorder(recordStream, {
+    mimeType: chosenMimeType,
+    videoBitsPerSecond,
   });
 
   const chunks: BlobPart[] = [];
@@ -885,180 +1315,138 @@ export async function exportEditedVideoToBlob(params: {
   };
 
   const finished = new Promise<Blob>((resolve) => {
-    recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' }));
+    recorder.onstop = () => {
+      const outType = chosenMimeType.startsWith('video/mp4')
+        ? 'video/mp4'
+        : 'video/webm';
+      resolve(new Blob(chunks, { type: outType }));
+    };
   });
 
-  recorder.start(100);
+  recorder.start(200);
 
-  const exportDuration = Math.min(Math.max(1.2, duration || 5), 6.5);
-  const totalSteps = 24;
-  const filterCss = buildVideoFilterCss(adjustments, 'none');
-
-  const isBehindTemplate =
-    styleOverrides.behindSubject ||
-    activeTemplate.behind ||
-    Boolean(activeTemplate.lookSpec?.behindSubject) ||
-    Boolean(activeTemplate.lookSpec?.wholeBehind);
-
-  for (let i = 0; i <= totalSteps; i++) {
-    const timelineTime = (i / totalSteps) * exportDuration;
-    const mapped = mapTimelineTimeToSourceVideo(videoClips, timelineTime);
-    const sourceTime = mapped.sourceTime;
-
-    await seekVideoTo(video, sourceTime);
-
-    // LAYER 1: Original Background Video Frame (at edited sourceTime)
-    ctx.save();
-    ctx.filter = filterCss;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    ctx.restore();
-
-    const { segment, activeWordIndex } = getActiveSegmentAndWord(segments, timelineTime);
-    const isBehindFrame = isBehindTemplate || Boolean(segment?.behindSubject);
-
-    // LAYER 2: "Behind You" Hero Caption Layer (drawn BEFORE human foreground)
-    if (isBehindFrame && segment && segment.words.length > 0) {
-      const cx = (styleOverrides.xOffset / 100) * canvas.width;
-      const behindY = Math.min(
-        canvas.height * 0.52,
-        (styleOverrides.yOffset / 100) * canvas.height
-      );
-      const heroWord =
-        segment.words[activeWordIndex] ||
-        segment.words.find((w) => w.emphasis !== 'none') ||
-        segment.words[0];
-      if (heroWord) {
-        const heroTxt = getWordTextForScript(heroWord, activeScript);
-        const heroFontSize = Math.round(
-          74 * styleOverrides.fontScale * (styleOverrides.behindHeroScale || 1)
-        );
-        ctx.save();
-        ctx.font = `900 ${heroFontSize}px ${activeTemplate.fontFamily || 'sans-serif'}`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.shadowColor = 'rgba(0,0,0,0.75)';
-        ctx.shadowBlur = 18;
-        ctx.fillStyle = styleOverrides.accentColor || activeTemplate.emphasisColor || '#F5A524';
-        ctx.fillText(heroTxt.toUpperCase(), cx, behindY);
-        ctx.restore();
-      }
-
-      // LAYER 3: Human-Only Segmented Foreground Silhouette (only composited if a human subject is detected!)
-      const segResult = segmentationTracker.processVideoFrame(
-        video,
-        fgHumanCanvas,
-        filterCss,
-        timelineTime
-      );
-      if (segResult.hasHumanSubject) {
-        ctx.save();
-        ctx.drawImage(fgHumanCanvas, 0, 0, canvas.width, canvas.height);
-        ctx.restore();
-      }
+  // Start native continuous video playback so frames decode smoothly in hardware with zero seek lag
+  let nativePlaybackWorking = false;
+  try {
+    await video.play();
+    nativePlaybackWorking = !video.paused;
+  } catch {
+    video.muted = true;
+    try {
+      await video.play();
+      nativePlaybackWorking = !video.paused;
+    } catch {
+      nativePlaybackWorking = false;
     }
-
-    // LAYER 4A: Detected OCR Text masks and replacements active at timelineTime
-    const activeOcr = detectedTexts.filter(
-      (d) => timelineTime >= d.startTime - 0.05 && timelineTime <= d.endTime + 0.05
-    );
-    for (const item of activeOcr) {
-      if (item.maskOriginal || item.isRemoved) {
-        const mw = (item.width / 100) * canvas.width;
-        const mh = (item.height / 100) * canvas.height;
-        const mx = (item.originalX / 100) * canvas.width - mw / 2;
-        const my = (item.originalY / 100) * canvas.height - mh / 2;
-        ctx.fillStyle = item.bgColor || '#101218';
-        ctx.beginPath();
-        ctx.roundRect(mx - 6, my - 4, mw + 12, mh + 8, 8);
-        ctx.fill();
-      }
-      if (!item.isRemoved && item.text.trim()) {
-        const rx = (item.x / 100) * canvas.width;
-        const ry = (item.y / 100) * canvas.height;
-        const fontSize = Math.round(28 * (item.fontScale || 1));
-        ctx.font = `800 ${fontSize}px ${activeTemplate.fontFamily || 'sans-serif'}`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-
-        const metrics = ctx.measureText(item.text);
-        const padX = 16;
-        const padY = 10;
-        ctx.fillStyle = 'rgba(12, 13, 18, 0.86)';
-        ctx.beginPath();
-        ctx.roundRect(
-          rx - metrics.width / 2 - padX,
-          ry - fontSize / 2 - padY,
-          metrics.width + padX * 2,
-          fontSize + padY * 2,
-          10
-        );
-        ctx.fill();
-
-        ctx.fillStyle = item.textColor || styleOverrides.accentColor || '#F5A524';
-        ctx.fillText(item.text, rx, ry);
-      }
-    }
-
-    // LAYER 4B: Timeline Text & Element Overlays active at timelineTime
-    const activeOverlays = overlays.filter(
-      (ov) => ov.type !== 'sfx' && timelineTime >= ov.start && timelineTime <= ov.end
-    );
-    for (const ov of activeOverlays) {
-      const ox = ((ov.x ?? 50) / 100) * canvas.width;
-      const oy = ((ov.y ?? 25) / 100) * canvas.height;
-      ctx.font = `900 30px ${activeTemplate.fontFamily || 'sans-serif'}`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = ov.color || '#F5A524';
-      ctx.fillText(ov.label, ox, oy);
-    }
-
-    // LAYER 5: Foreground Synchronized Caption Words at timelineTime
-    if (segment && segment.words.length > 0) {
-      const cx = (styleOverrides.xOffset / 100) * canvas.width;
-      const cy = (styleOverrides.yOffset / 100) * canvas.height;
-      const fontSize = Math.round(32 * styleOverrides.fontScale);
-      ctx.font = `900 ${fontSize}px ${activeTemplate.fontFamily || 'sans-serif'}`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-
-      const fullLine = segment.words
-        .map((w) => {
-          const txt = getWordTextForScript(w, activeScript);
-          return styleOverrides.uppercase ? txt.toUpperCase() : txt;
-        })
-        .join(' ');
-
-      ctx.shadowColor = 'rgba(0,0,0,0.85)';
-      ctx.shadowBlur = 12;
-      ctx.fillStyle = styleOverrides.primaryColor || '#FFFFFF';
-      ctx.fillText(fullLine, cx, cy);
-
-      if (!isBehindFrame) {
-        const activeWord = segment.words[activeWordIndex];
-        if (activeWord) {
-          const activeTxt = getWordTextForScript(activeWord, activeScript);
-          ctx.fillStyle = styleOverrides.accentColor || '#F5A524';
-          ctx.font = `900 ${Math.round(fontSize * 1.15)}px ${
-            activeTemplate.fontFamily || 'sans-serif'
-          }`;
-          ctx.fillText(
-            styleOverrides.uppercase ? activeTxt.toUpperCase() : activeTxt,
-            cx,
-            cy + fontSize * 1.15
-          );
-        }
-      }
-      ctx.shadowBlur = 0;
-    }
-
-    onProgress(Math.min(99, Math.round(((i + 1) / (totalSteps + 1)) * 100)));
-    await new Promise((r) => setTimeout(r, 35));
   }
 
-  recorder.stop();
-  video.src = '';
+  if (nativePlaybackWorking) {
+    // Real-time continuous 60fps render loop across the ENTIRE exportDuration
+    await new Promise<void>((resolve) => {
+      const startWallMs = performance.now();
+      let settled = false;
+      let rafId = 0;
+
+      const finishLoop = () => {
+        if (settled) return;
+        settled = true;
+        if (rafId) cancelAnimationFrame(rafId);
+        clearInterval(intervalId);
+        video.onended = null;
+        resolve();
+      };
+
+      const tick = () => {
+        if (settled) return;
+        const wallElapsedSec = (performance.now() - startWallMs) / 1000;
+
+        let timelineTime: number;
+        if (isSingleUntrimmedClip) {
+          timelineTime = Math.max(wallElapsedSec * 0.98, video.currentTime);
+        } else {
+          timelineTime = wallElapsedSec;
+          const mapped = mapTimelineTimeToSourceVideo(videoClips, timelineTime);
+          const targetSpeed = mapped.clip?.speed || 1;
+          if (Math.abs(video.playbackRate - targetSpeed) > 0.05) {
+            video.playbackRate = targetSpeed;
+          }
+          // Only seek at non-contiguous cut boundaries between clips (never during continuous playback!)
+          if (
+            !video.seeking &&
+            Math.abs(video.currentTime - mapped.sourceTime) > 0.35
+          ) {
+            try {
+              video.currentTime = mapped.sourceTime;
+            } catch {
+              // ignore
+            }
+          }
+        }
+
+        const clampedTime = Math.min(exportDuration, timelineTime);
+        renderFrameAtTimelineTime(clampedTime);
+
+        const pct = Math.min(
+          99,
+          Math.max(5, Math.round((clampedTime / exportDuration) * 100))
+        );
+        onProgress(pct);
+
+        if (
+          timelineTime >= exportDuration - 0.02 ||
+          (isSingleUntrimmedClip && video.ended)
+        ) {
+          renderFrameAtTimelineTime(exportDuration);
+          finishLoop();
+          return;
+        }
+      };
+
+      // Use both 16ms interval (continues even if tab is backgrounded) and rAF for butter-smooth 60fps
+      const intervalId = setInterval(tick, 16);
+      const rafLoop = () => {
+        if (settled) return;
+        tick();
+        rafId = requestAnimationFrame(rafLoop);
+      };
+      rafId = requestAnimationFrame(rafLoop);
+
+      if (isSingleUntrimmedClip) {
+        video.onended = () => {
+          renderFrameAtTimelineTime(exportDuration);
+          finishLoop();
+        };
+      }
+    });
+  } else {
+    // Fallback frame-stepped rendering if browser blocked video.play() in headless environment
+    const fps = 30;
+    const totalFrames = Math.max(30, Math.round(exportDuration * fps));
+    for (let f = 0; f <= totalFrames; f++) {
+      const timelineTime = (f / totalFrames) * exportDuration;
+      const mapped = mapTimelineTimeToSourceVideo(videoClips, timelineTime);
+      await seekVideoTo(video, mapped.sourceTime);
+      renderFrameAtTimelineTime(timelineTime);
+      onProgress(Math.min(99, Math.round(((f + 1) / (totalFrames + 1)) * 100)));
+      await new Promise((r) => setTimeout(r, 1000 / fps));
+    }
+  }
+
+  video.pause();
+  if (recorder.state === 'recording') {
+    try {
+      recorder.requestData();
+    } catch {
+      // ignore
+    }
+    recorder.stop();
+  }
   const finalBlob = await finished;
+  if (playingWithAudio) {
+    recordStream.getTracks().forEach((t) => t.stop());
+  }
+  video.src = '';
   onProgress(100);
   return finalBlob;
 }
+

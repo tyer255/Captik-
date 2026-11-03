@@ -2358,6 +2358,10 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
         16
       )}px ${hexWithAlpha(c, 0.32)}, 0 0 ${sz(27)}px ${hexWithAlpha(c, 0.1)}`;
 
+    const sideFont = overrideFont(template.fontFamily);
+    const sideSize = sz(isGlow ? 28 : 24);
+    const sideTransform = isIllusion ? 'none' : (template.uppercase ? 'uppercase' : 'none');
+
     return (
       <div style={boxStyle} data-caption-content="true">
         <div
@@ -2365,7 +2369,7 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
             display: 'inline-flex',
             flexDirection: 'column',
             alignItems: 'stretch',
-            gap: isShadow ? 0 : sz(2),
+            gap: isShadow ? 0 : sz(3),
             width: 'fit-content',
           }}
         >
@@ -2377,9 +2381,11 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
                   onClick={() => onWordClick?.(w)}
                   style={{
                     cursor: 'pointer',
-                    fontFamily: overrideFont('Inter, sans-serif'),
-                    fontWeight: isShadow ? 800 : 700,
-                    fontSize: sz(isGlow ? 18 : 14),
+                    fontFamily: sideFont,
+                    fontWeight: isShadow ? 900 : template.fontWeight || 800,
+                    fontSize: sideSize,
+                    textTransform: sideTransform,
+                    letterSpacing: '0.02em',
                     color: userText,
                     ...(isShadow
                       ? {
@@ -2388,7 +2394,7 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
                           WebkitTextFillColor: 'transparent',
                         }
                       : {}),
-                    textShadow: isGlow ? glowFn(userText) : '0 2px 8px rgba(0,0,0,0.65)',
+                    textShadow: isGlow ? glowFn(userText) : '0 3px 10px rgba(0,0,0,0.75)',
                   }}
                 >
                   {w.word}
@@ -2408,11 +2414,12 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
               onClick={() => onWordClick?.(heroWord)}
               style={{
                 cursor: 'pointer',
-                fontFamily: overrideFont('Inter, sans-serif'),
+                fontFamily: overrideFont(template.fontFamily),
                 fontWeight: 900,
                 fontSize: sz(isIllusion ? 40 : 44),
                 lineHeight: 1,
                 textTransform: isIllusion ? 'none' : 'uppercase',
+                letterSpacing: '0.02em',
                 color: userAccent,
                 ...(isShadow
                   ? {
@@ -2443,9 +2450,11 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
                   onClick={() => onWordClick?.(w)}
                   style={{
                     cursor: 'pointer',
-                    fontFamily: overrideFont('Inter, sans-serif'),
-                    fontWeight: isShadow ? 800 : 700,
-                    fontSize: sz(isGlow ? 18 : 14),
+                    fontFamily: sideFont,
+                    fontWeight: isShadow ? 900 : template.fontWeight || 800,
+                    fontSize: sideSize,
+                    textTransform: sideTransform,
+                    letterSpacing: '0.02em',
                     color: userText,
                     ...(isShadow
                       ? {
@@ -2454,7 +2463,7 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
                           WebkitTextFillColor: 'transparent',
                         }
                       : {}),
-                    textShadow: isGlow ? glowFn(userText) : '0 2px 8px rgba(0,0,0,0.65)',
+                    textShadow: isGlow ? glowFn(userText) : '0 3px 10px rgba(0,0,0,0.75)',
                   }}
                 >
                   {w.word}
@@ -2576,7 +2585,7 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
 
   // If `look.impact` or `big_reveal` is active, filter out the hero word from the bottom row (just like Captik's `a.row`!)
   const rowWords =
-    (id === 'big_reveal' || (look?.impact && look.behindSubject)) && words.length > 1
+    (id === 'big_reveal' || Boolean(look?.impact)) && words.length > 1
       ? words.filter((_, idx) => idx !== heroIdx)
       : words;
 
@@ -2717,17 +2726,20 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
                   fontStyle: isHighlighted && look.accentItalic ? 'italic' : 'normal',
                   fontSize: sz(
                     Math.round(
-                      (Number.isFinite(look.sizePx) ? look.sizePx : 20) *
-                        (isHighlighted && Number.isFinite(look.accentScale)
-                          ? (look.accentScale as number)
-                          : 1) *
-                        0.85
+                      Math.max(
+                        22,
+                        (Number.isFinite(look.sizePx) ? look.sizePx : 22) *
+                          (isHighlighted && Number.isFinite(look.accentScale)
+                            ? (look.accentScale as number)
+                            : 1) *
+                          0.95
+                      )
                     )
                   ),
                   textTransform:
                     look.transform ?? (isHighlighted && look.accentUppercase ? 'uppercase' : 'none'),
                   color: fg,
-                  opacity: isSpoken ? 1 : look.restOpacity ?? 0.75,
+                  opacity: isSpoken ? 1 : Math.max(0.75, look.restOpacity ?? 0.75),
                   ...(look.stroke
                     ? { WebkitTextStroke: `${look.stroke.px}px ${look.stroke.color}` }
                     : {}),
@@ -2756,8 +2768,8 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
                 cursor: 'pointer',
                 display: 'inline-block',
                 fontFamily: overrideFont(template.fontFamily),
-                fontWeight: template.fontWeight,
-                fontSize: sz(isActive || isEmph ? 21 : 18),
+                fontWeight: template.fontWeight || 800,
+                fontSize: sz(isActive || isEmph ? 25 : 22),
                 textTransform: template.uppercase ? 'uppercase' : 'none',
                 letterSpacing: id === 'thora_cinematic' ? '0.28em' : undefined,
                 color:
@@ -2778,7 +2790,7 @@ export const CaptikCanvasCaptionOverlay: React.FC<{
                 padding: isPillActive ? '2px 8px' : undefined,
                 borderRadius: isPillActive ? 8 : undefined,
                 opacity:
-                  id === 'captik_word' && !isSpoken ? 0.18 : 1,
+                  id === 'captik_word' && !isSpoken ? 0.45 : 1,
                 WebkitTextStroke:
                   template.strokeWidth && template.strokeColor
                     ? `${template.strokeWidth * 0.45}px ${template.strokeColor}`

@@ -69,6 +69,7 @@ import type {
   DetectedVideoTextItem,
 } from '../utils/projectAndOcrLogic';
 import type { OcrScanProgress } from '../utils/videoOcrEngine';
+import type { AiCaptionProgress } from '../utils/aiCaptionEngine';
 
 export type LeftRailTab =
   | 'media'
@@ -137,6 +138,9 @@ interface LeftSidebarPanelProps {
   onTriggerOcrScan: () => void;
   ocrProgress: OcrScanProgress | null;
   ocrError: string | null;
+  onTriggerAiCaptions?: (customSpokenScript?: string) => void;
+  aiCaptionProgress?: AiCaptionProgress | null;
+  aiCaptionError?: string | null;
   activeTemplate: CaptionTemplateSpec;
   onSelectTemplate: (tpl: CaptionTemplateSpec) => void;
 }
@@ -208,10 +212,15 @@ export const LeftSidebarPanel: React.FC<LeftSidebarPanelProps> = ({
   onTriggerOcrScan,
   ocrProgress,
   ocrError,
+  onTriggerAiCaptions,
+  aiCaptionProgress,
+  aiCaptionError,
   activeTemplate,
   onSelectTemplate,
 }) => {
   const [captionSettingsOpen, setCaptionSettingsOpen] = useState(false);
+  const [customScriptInput, setCustomScriptInput] = useState('');
+  const [showCustomScriptBox, setShowCustomScriptBox] = useState(false);
   const [editingWordKey, setEditingWordKey] = useState<string | null>(null);
   const [editingWordValue, setEditingWordValue] = useState('');
 
@@ -313,6 +322,8 @@ export const LeftSidebarPanel: React.FC<LeftSidebarPanelProps> = ({
     ocrProgress.phase !== 'completed' &&
     ocrProgress.phase !== 'error';
 
+  const [isDrawerOpen, setIsDrawerOpen] = useState(true);
+
   return (
     <aside className="hidden md:flex h-full shrink-0 select-none z-20">
       {/* 62px Left Icon Rail (Exact Match to captik_desk.webp) */}
@@ -325,19 +336,26 @@ export const LeftSidebarPanel: React.FC<LeftSidebarPanelProps> = ({
               key={item.id}
               type="button"
               data-testid={`left-rail-${item.id}`}
-              onClick={() => onSelectTab(item.id)}
+              onClick={() => {
+                if (activeTab === item.id) {
+                  setIsDrawerOpen((prev) => !prev);
+                } else {
+                  onSelectTab(item.id);
+                  setIsDrawerOpen(true);
+                }
+              }}
               className={`relative w-13 py-2.5 rounded-lg flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
-                isActive
+                isActive && isDrawerOpen
                   ? 'bg-[#171614] text-white'
                   : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.04]'
               }`}
             >
-              {isActive && (
+              {isActive && isDrawerOpen && (
                 <span className="absolute top-0 inset-x-2 h-[2px] bg-[#f5a524] rounded-full" />
               )}
               <Icon
                 className={`w-4 h-4 ${
-                  isActive ? 'text-[#f5a524]' : 'text-zinc-400'
+                  isActive && isDrawerOpen ? 'text-[#f5a524]' : 'text-zinc-400'
                 }`}
               />
               <span className="text-[10px] font-medium leading-none tracking-tight">
@@ -358,8 +376,9 @@ export const LeftSidebarPanel: React.FC<LeftSidebarPanelProps> = ({
         })}
       </div>
 
-      {/* Contextual Panel Drawer (Responsive width so Left + Center + Right fit on all desktop screens) */}
-      <div className="w-[265px] xl:w-[305px] bg-[#0e0e10] border-r border-white/[0.07] flex flex-col h-full overflow-hidden">
+      {/* Contextual Panel Drawer (Collapsible to maximize stage view) */}
+      {isDrawerOpen && (
+        <div className="w-[265px] xl:w-[305px] bg-[#0e0e10] border-r border-white/[0.07] flex flex-col h-full overflow-hidden relative">
         {/* ==================== TAB 1: CAPTIONS (Default Active) ==================== */}
         {activeTab === 'captions' && (
           <div className="flex flex-col h-full">
@@ -401,8 +420,97 @@ export const LeftSidebarPanel: React.FC<LeftSidebarPanelProps> = ({
               </div>
             </div>
 
-            {/* LINES (1 Line / 2 Lines) & CAPTION SETTINGS (Matches captik_desk.webp) */}
+            {/* AI Speech-to-Caption Generator + LINES & CAPTION SETTINGS */}
             <div className="p-3.5 border-b border-white/[0.07] space-y-3">
+              {/* Gemini AI Speech-to-Caption Card */}
+              <div className="p-2.5 rounded-xl bg-gradient-to-br from-[#1b1812] to-[#131317] border border-[#f5a524]/35 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Sparkles className="w-3.5 h-3.5 text-[#f5a524] shrink-0" />
+                    <span className="text-[11px] font-bold text-white truncate">
+                      AI Speech-to-Captions
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowCustomScriptBox((v) => !v)}
+                    className="text-[10px] font-semibold text-[#f5a524] hover:underline cursor-pointer shrink-0"
+                  >
+                    {showCustomScriptBox ? 'Hide Script' : '+ Custom Script'}
+                  </button>
+                </div>
+
+                {showCustomScriptBox && (
+                  <textarea
+                    rows={2}
+                    data-testid="custom-spoken-script-input"
+                    value={customScriptInput}
+                    onChange={(e) => setCustomScriptInput(e.target.value)}
+                    placeholder="Optional: Type or paste what the speaker says in the video (Hindi / Hinglish / English)..."
+                    className="w-full bg-[#0d0d11] border border-white/15 rounded-lg px-2.5 py-1.5 text-[11px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#f5a524] resize-none"
+                  />
+                )}
+
+                <button
+                  type="button"
+                  data-testid="generate-ai-captions-btn"
+                  disabled={Boolean(
+                    aiCaptionProgress &&
+                      aiCaptionProgress.phase !== 'completed' &&
+                      aiCaptionProgress.phase !== 'error'
+                  )}
+                  onClick={() =>
+                    onTriggerAiCaptions?.(customScriptInput.trim() || undefined)
+                  }
+                  className="w-full py-2 px-3 rounded-lg bg-[#f5a524] hover:bg-[#fbbf24] disabled:opacity-60 text-black font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                >
+                  {aiCaptionProgress &&
+                  aiCaptionProgress.phase !== 'completed' &&
+                  aiCaptionProgress.phase !== 'error' ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Generating Captions...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Wand2 className="w-3.5 h-3.5" />
+                      <span>Generate AI Captions from Video</span>
+                    </>
+                  )}
+                </button>
+
+                {aiCaptionProgress && aiCaptionProgress.phase !== 'error' && (
+                  <div
+                    data-testid="ai-caption-progress-box"
+                    className="space-y-1 pt-0.5"
+                  >
+                    <div className="flex items-center justify-between text-[10px] text-amber-200 font-medium">
+                      <span className="truncate pr-2">
+                        {aiCaptionProgress.statusMessage}
+                      </span>
+                      <span className="font-mono tabular-nums shrink-0">
+                        {aiCaptionProgress.percent}%
+                      </span>
+                    </div>
+                    <div className="w-full h-1 rounded-full bg-black/50 overflow-hidden">
+                      <div
+                        style={{ width: `${aiCaptionProgress.percent}%` }}
+                        className="h-full bg-[#f5a524] transition-all duration-200"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {aiCaptionError && (
+                  <div
+                    data-testid="ai-caption-error-box"
+                    className="p-2 rounded-lg bg-rose-500/15 border border-rose-500/35 text-[10.5px] text-rose-300"
+                  >
+                    {aiCaptionError}
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
                   LINES
@@ -548,13 +656,21 @@ export const LeftSidebarPanel: React.FC<LeftSidebarPanelProps> = ({
                     No captions yet for this video
                   </div>
                   <p className="text-[11px] text-zinc-400 leading-relaxed">
-                    Run Automatic Text Detection (OCR) to extract text from video frames, or add captions manually.
+                    Generate word-by-word captions from the video’s spoken audio with Gemini AI, or scan visual frame text with OCR.
                   </p>
                   <div className="flex flex-col gap-1.5">
                     <button
                       type="button"
-                      onClick={onTriggerOcrScan}
+                      onClick={() => onTriggerAiCaptions?.(customScriptInput.trim() || undefined)}
                       className="w-full py-2 rounded-lg bg-[#f5a524] text-black font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Generate AI Captions (Voice)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onTriggerOcrScan}
+                      className="w-full py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <ScanText className="w-3.5 h-3.5" />
                       <span>Detect Video Text (OCR)</span>
@@ -2138,6 +2254,7 @@ export const LeftSidebarPanel: React.FC<LeftSidebarPanelProps> = ({
           </div>
         )}
       </div>
+      )}
     </aside>
   );
 };

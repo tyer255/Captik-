@@ -40,6 +40,7 @@ import {
   type DetectedVideoTextItem,
 } from '../utils/projectAndOcrLogic';
 import type { OcrScanProgress } from '../utils/videoOcrEngine';
+import type { AiCaptionProgress } from '../utils/aiCaptionEngine';
 import {
   HumanSegmentationTracker,
   type HumanSegmentationResult,
@@ -79,6 +80,7 @@ interface PlayerStageProps {
   onDeleteDetectedText: (id: string) => void;
   onTriggerOcrScan: () => void;
   ocrProgress: OcrScanProgress | null;
+  aiCaptionProgress?: AiCaptionProgress | null;
   onOpenNewProjectModal: () => void;
   playbackRate?: number;
 }
@@ -110,6 +112,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   onDeleteDetectedText,
   onTriggerOcrScan,
   ocrProgress,
+  aiCaptionProgress,
   onOpenNewProjectModal,
   playbackRate = 1,
 }) => {
@@ -126,7 +129,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
   const [zoomPercent, setZoomPercent] = useState<number>(100);
   const [showSafeGrid, setShowSafeGrid] = useState<boolean>(false);
-  const [showOcrBoxes, setShowOcrBoxes] = useState<boolean>(true);
+  const [showOcrBoxes, setShowOcrBoxes] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isDraggingCaption, setIsDraggingCaption] = useState<boolean>(false);
   const [draggingOcrId, setDraggingOcrId] = useState<string | null>(null);
@@ -142,7 +145,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     shoulderWidthPercent: 34,
   });
 
-  const effectiveVideoUrl = mediaAsset.videoUrl || '/assets/terrace_reel.mp4';
+  const effectiveVideoUrl = mediaAsset.videoUrl || '/assets/raw_take.mp4';
 
   const { segment, activeWordIndex } = getActiveSegmentAndWord(
     segments,
@@ -180,13 +183,21 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const mappedVideo = mapTimelineTimeToSourceVideo(videoClips, currentTime);
   const mappedAudio = mapTimelineTimeToSourceAudio(audioClips, currentTime);
 
-  // Run Human-Only Segmentation on the current decoded video frame
+  const lastSegScanMsRef = useRef<number>(0);
+
+  // Run Human-Only Segmentation on the current decoded video frame (tracks head/torso without drawing duplicate face pixels)
   const updateHumanSegmentationCanvas = useCallback(
-    (timeSec: number) => {
+    (timeSec: number, force = false) => {
       const vid = bgVideoRef.current;
       const fgCanvas = fgSegmentationCanvasRef.current;
       const tracker = segmentationTrackerRef.current;
       if (!vid || !fgCanvas || !tracker || !isBehindActive) return;
+
+      const nowMs = performance.now();
+      if (!force && nowMs - lastSegScanMsRef.current < 160) {
+        return;
+      }
+      lastSegScanMsRef.current = nowMs;
 
       const targetW =
         aspectRatio === '16:9'
@@ -212,7 +223,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
         vid,
         fgCanvas,
         videoFilterCss,
-        timeSec
+        timeSec,
+        true
       );
       setHumanSegStatus((prev) =>
         prev.hasHumanSubject !== res.hasHumanSubject ||
@@ -265,12 +277,14 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
     audioClips.length,
   ]);
 
-  // Sync timeline currentTime -> source media time on seek or clip boundary crossing
+  // Sync timeline currentTime -> source media time ONLY when PAUSED (scrubbing, clicking timeline)
   useEffect(() => {
+    if (isPlaying) return; // Completely guard against any video interruptions/seeks while playing!
     const vid = bgVideoRef.current;
     if (!vid) return;
     const targetSourceTime = mappedVideo.sourceTime;
-    if (Math.abs(vid.currentTime - targetSourceTime) > 0.14) {
+
+    if (Math.abs(vid.currentTime - targetSourceTime) > 0.02) {
       try {
         vid.currentTime = targetSourceTime;
       } catch {
@@ -278,41 +292,48 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
       }
     }
     updateHumanSegmentationCanvas(currentTime);
-  }, [currentTime, mappedVideo.sourceTime, updateHumanSegmentationCanvas]);
+  }, [currentTime, isPlaying, mappedVideo.sourceTime, updateHumanSegmentationCanvas]);
 
   // Continuous requestAnimationFrame timeline & human segmentation loop while playing
   useEffect(() => {
     if (!isPlaying) return;
+    const vid = bgVideoRef.current;
+    if (!vid) return;
+
     let rafId = 0;
-    let lastPerf = performance.now();
+    const safeDur = Math.max(0.5, duration || 7.07);
 
-    const step = (now: number) => {
-      const dt = Math.min(0.1, Math.max(0, (now - lastPerf) / 1000));
-      lastPerf = now;
+    const step = () => {
+      if (vid && !vid.paused && !vid.seeking) {
+        // Source video is playing smoothly! Use actual decoded video time as master clock
+        const clip = mappedVideo.clip;
+        let nextTimelineTime: number;
+        if (clip) {
+          const speed = clip.speed || 1;
+          const elapsed = Math.max(0, vid.currentTime - clip.sourceStart);
+          nextTimelineTime = clip.timelineStart + elapsed / speed;
+        } else {
+          nextTimelineTime = vid.currentTime;
+        }
 
-      const safeDur = Math.max(0.5, duration || 7.07);
-      let nextTimelineTime = currentTimeRef.current + dt * playbackRate;
+        // Seamless loop at duration
+        if (vid.ended || nextTimelineTime >= safeDur) {
+          vid.currentTime = 0;
+          nextTimelineTime = 0;
+          vid.play().catch(() => {});
+        }
 
-      // If in a gap between split/deleted clips, jump directly to nextClipStart
-      const curMap = mapTimelineTimeToSourceVideo(videoClips, nextTimelineTime);
-      if (curMap.isGap && curMap.nextClipStart !== null) {
-        nextTimelineTime = curMap.nextClipStart;
+        currentTimeRef.current = nextTimelineTime;
+        onTimeUpdate(Number(nextTimelineTime.toFixed(2)));
+        updateHumanSegmentationCanvas(nextTimelineTime);
       }
-
-      if (nextTimelineTime >= safeDur) {
-        nextTimelineTime = 0;
-      }
-
-      currentTimeRef.current = nextTimelineTime;
-      onTimeUpdate(Number(nextTimelineTime.toFixed(2)));
-      updateHumanSegmentationCanvas(nextTimelineTime);
 
       rafId = requestAnimationFrame(step);
     };
 
     rafId = requestAnimationFrame(step);
     return () => cancelAnimationFrame(rafId);
-  }, [isPlaying, duration, playbackRate, videoClips, onTimeUpdate, updateHumanSegmentationCanvas]);
+  }, [isPlaying, duration, mappedVideo.clip, onTimeUpdate, updateHumanSegmentationCanvas]);
 
   // Active Timeline Overlays at currentTime
   const visibleOverlays = overlays.filter(
@@ -357,14 +378,14 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   const getAspectDimensions = () => {
     switch (aspectRatio) {
       case '16:9':
-        return 'aspect-video w-full max-w-[620px] max-h-[90%]';
+        return 'aspect-video w-full max-w-[820px] max-h-[calc(100%-12px)]';
       case '1:1':
-        return 'aspect-square h-full max-h-[380px] max-w-[92%]';
+        return 'aspect-square h-full max-h-[calc(100%-12px)] max-w-[94%]';
       case '4:5':
-        return 'aspect-[4/5] h-full max-h-[410px] max-w-[92%]';
+        return 'aspect-[4/5] h-full max-h-[calc(100%-12px)] max-w-[94%]';
       case '9:16':
       default:
-        return 'aspect-[9/16] h-full max-h-[440px] max-w-[92%]';
+        return 'aspect-[9/16] h-full max-h-[calc(100%-12px)] max-w-[94%]';
     }
   };
 
@@ -381,61 +402,59 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
   return (
     <main className="flex-1 bg-[#09090b] flex flex-col h-full min-w-[280px] select-none overflow-hidden relative">
-      {/* Top Player Sub-Toolbar (Matches captik_desk.webp) */}
-      <div className="h-10 px-4 border-b border-white/[0.07] flex items-center justify-between text-xs shrink-0 bg-[#0b0b0d]">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span className="font-semibold text-[#e4e4e7] text-[13px]">Player</span>
+      {/* Top Player Canvas Toolbar (Clean, Pro Studio Layout) */}
+      <div className="h-10 px-3.5 border-b border-white/[0.07] flex items-center justify-between text-xs shrink-0 bg-[#0b0b0d]">
+        {/* Left: Aspect Ratio Selector Pills */}
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-center gap-1 bg-[#141418] border border-white/[0.08] rounded-lg p-0.5">
+            {(['9:16', '16:9', '1:1', '4:5'] as AspectRatioPreset[]).map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => onChangeAspectRatio(r)}
+                className={`px-2 py-0.5 rounded text-[11px] font-semibold tabular-nums transition-all cursor-pointer ${
+                  aspectRatio === r
+                    ? 'bg-[#f5a524] text-black shadow-xs'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                {r === '9:16'
+                  ? '9:16 Reel'
+                  : r === '16:9'
+                  ? '16:9 Video'
+                  : r === '1:1'
+                  ? '1:1 Post'
+                  : '4:5 Feed'}
+              </button>
+            ))}
+          </div>
 
-          <button
-            type="button"
-            onClick={onOpenNewProjectModal}
-            className="px-2 py-1 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-[11px] font-medium text-zinc-300 hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
-            title="Upload a new video or create a new project"
-          >
-            <Upload className="w-3 h-3 text-[#f5a524]" />
-            <span className="hidden sm:inline">Upload Video</span>
-          </button>
-
-          <button
-            type="button"
-            data-testid="player-detect-text-btn"
-            onClick={onTriggerOcrScan}
-            disabled={Boolean(isScanning)}
-            className="px-2 py-1 rounded-md bg-[#f5a524]/12 hover:bg-[#f5a524]/20 border border-[#f5a524]/35 text-[11px] font-semibold text-[#f5a524] flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
-            title="Run real OCR text detection on video frames"
-          >
-            <ScanText className="w-3 h-3" />
-            <span>
-              {isScanning
-                ? `Scanning ${ocrProgress?.percent || 0}%`
-                : detectedTexts.length > 0
-                ? `OCR Text (${detectedTexts.length})`
-                : 'Detect Video Text'}
-            </span>
-          </button>
+          <span className="hidden xl:inline text-[11px] font-mono text-zinc-500 truncate max-w-[140px]">
+            {mediaAsset.title}
+          </span>
         </div>
 
-        {/* Right Controls: Zoom - 100% +, Safe Grid, Aspect Frame, Behind-You Cutout */}
+        {/* Right Controls: Zoom - 100% +, Safe Grid, OCR Boxes, Behind-You Cutout Status */}
         <div className="flex items-center gap-1.5">
-          <div className="flex items-center gap-0.5 text-zinc-400">
+          <div className="flex items-center gap-0.5 bg-[#141418] border border-white/[0.08] rounded-md px-1 py-0.5 text-zinc-400">
             <button
               type="button"
               onClick={() => setZoomPercent((z) => Math.max(70, z - 10))}
               aria-label="Zoom out player"
-              className="p-1 hover:text-white cursor-pointer"
+              className="p-0.5 hover:text-white cursor-pointer"
             >
-              <ZoomOut className="w-3.5 h-3.5" />
+              <ZoomOut className="w-3 h-3" />
             </button>
-            <span className="px-1 text-[11px] font-mono tabular-nums text-zinc-300">
+            <span className="px-1 text-[10.5px] font-mono tabular-nums text-zinc-300">
               {zoomPercent}%
             </span>
             <button
               type="button"
               onClick={() => setZoomPercent((z) => Math.min(130, z + 10))}
               aria-label="Zoom in player"
-              className="p-1 hover:text-white cursor-pointer"
+              className="p-0.5 hover:text-white cursor-pointer"
             >
-              <ZoomIn className="w-3.5 h-3.5" />
+              <ZoomIn className="w-3 h-3" />
             </button>
           </div>
 
@@ -444,13 +463,14 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             onClick={() => setShowSafeGrid(!showSafeGrid)}
             title="Toggle Reels / Shorts safe zone guides"
             aria-label="Toggle safe zone grid"
-            className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+            className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors flex items-center gap-1 cursor-pointer ${
               showSafeGrid
-                ? 'bg-[#f5a524]/20 text-[#f5a524]'
-                : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05]'
+                ? 'bg-[#f5a524]/20 text-[#f5a524] border border-[#f5a524]/40'
+                : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05] border border-transparent'
             }`}
           >
             <Grid className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Guides</span>
           </button>
 
           <button
@@ -458,13 +478,14 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             onClick={() => setShowOcrBoxes(!showOcrBoxes)}
             title="Toggle Detected OCR Text bounding boxes on video"
             aria-label="Toggle OCR boxes"
-            className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+            className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors flex items-center gap-1 cursor-pointer ${
               showOcrBoxes
-                ? 'bg-emerald-500/20 text-emerald-300'
-                : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05]'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05] border border-transparent'
             }`}
           >
             <Smartphone className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">OCR</span>
           </button>
 
           <button
@@ -477,28 +498,53 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             }
             title="Toggle 'Behind you' AI human subject depth cutout"
             aria-label="Toggle Behind you cutout"
-            className={`px-2 py-1 rounded-md transition-colors flex items-center gap-1 cursor-pointer ${
+            className={`px-2 py-1 rounded-md transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 whitespace-nowrap ${
               isBehindActive
                 ? humanSegStatus.hasHumanSubject
                   ? 'bg-[#f5a524]/20 text-[#f5a524] border border-[#f5a524]/40'
                   : 'bg-zinc-800 text-zinc-300 border border-white/10'
-                : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05]'
+                : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05] border border-transparent'
             }`}
           >
             <PersonStanding className="w-3.5 h-3.5" />
-            {isBehindActive && (
-              <span
-                data-testid="human-segmentation-badge"
-                className="hidden lg:inline text-[10px] font-mono font-semibold"
-              >
-                {humanSegStatus.hasHumanSubject
-                  ? `Human Mask · ${humanSegStatus.confidence}%`
-                  : 'No Human · Front'}
-              </span>
-            )}
+            <span
+              data-testid="human-segmentation-badge"
+              className="text-[10.5px] font-semibold whitespace-nowrap"
+            >
+              {isBehindActive
+                ? humanSegStatus.hasHumanSubject
+                  ? 'Behind You'
+                  : 'Behind You (No Person)'
+                : 'Behind You'}
+            </span>
           </button>
         </div>
       </div>
+
+      {/* Live AI Speech-to-Caption Progress Banner */}
+      {aiCaptionProgress &&
+        aiCaptionProgress.phase !== 'completed' &&
+        aiCaptionProgress.phase !== 'error' && (
+          <div
+            data-testid="stage-ai-caption-banner"
+            className="mx-4 mt-2 px-3 py-2 rounded-xl bg-[#14161e]/95 border border-[#f5a524]/50 flex items-center justify-between gap-3 z-40 shadow-lg shrink-0"
+          >
+            <div className="min-w-0">
+              <div className="text-xs font-bold text-[#f5a524] truncate">
+                {aiCaptionProgress.statusMessage}
+              </div>
+              <div className="w-48 sm:w-64 h-1.5 rounded-full bg-zinc-800 overflow-hidden mt-1">
+                <div
+                  style={{ width: `${aiCaptionProgress.percent}%` }}
+                  className="h-full bg-[#f5a524] transition-all duration-200"
+                />
+              </div>
+            </div>
+            <span className="font-mono text-xs font-bold text-white tabular-nums shrink-0">
+              {aiCaptionProgress.percent}%
+            </span>
+          </div>
+        )}
 
       {/* Live OCR Scanning Progress Banner (Non-blocking, top of canvas) */}
       {ocrProgress && ocrProgress.phase !== 'completed' && (
@@ -553,7 +599,16 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
             preload="auto"
             muted={isMuted}
             playsInline
-            loop
+            onEnded={() => {
+              if (isPlaying) {
+                const vid = bgVideoRef.current;
+                if (vid) {
+                  vid.currentTime = 0;
+                  onTimeUpdate(0);
+                  vid.play().catch(() => {});
+                }
+              }
+            }}
             onLoadedData={() => {
               updateHumanSegmentationCanvas(currentTime);
             }}
@@ -561,18 +616,16 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               updateHumanSegmentationCanvas(currentTime);
             }}
             onLoadedMetadata={(e) => {
-              if (
-                e.currentTarget.duration &&
-                Number.isFinite(e.currentTarget.duration) &&
-                e.currentTarget.duration > 0 &&
-                videoClips.length <= 1
-              ) {
-                onDurationLoaded(Number(e.currentTarget.duration.toFixed(2)));
+              const dur = e.currentTarget.duration;
+              if (dur && Number.isFinite(dur) && dur > 0 && videoClips.length <= 1) {
+                onDurationLoaded(Number(dur.toFixed(2)));
               }
-              try {
-                e.currentTarget.currentTime = mappedVideo.sourceTime;
-              } catch {
-                // ignore
+              if (!isPlaying) {
+                try {
+                  e.currentTarget.currentTime = mappedVideo.sourceTime;
+                } catch {
+                  // ignore
+                }
               }
               updateHumanSegmentationCanvas(currentTime);
             }}
@@ -596,11 +649,12 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           {visibleDetectedTexts.map((ocrItem) => {
             const isSelected = selectedDetectedTextId === ocrItem.id;
             const isEditingThis = editingOcrId === ocrItem.id;
+            const shouldRenderBox = showOcrBoxes || isSelected || isEditingThis;
 
             return (
               <React.Fragment key={ocrItem.id}>
-                {/* Original Burned-In Video Text Cover Mask (when edited, moved, or removed) */}
-                {(ocrItem.maskOriginal || ocrItem.isRemoved) && (
+                {/* Original Burned-In Video Text Cover Mask (only when text was actually modified, moved, or deleted) */}
+                {((ocrItem.maskOriginal && (ocrItem.text !== ocrItem.originalText || ocrItem.isRemoved)) || isEditingThis) && (
                   <div
                     style={{
                       left: `${ocrItem.originalX ?? ocrItem.x ?? 50}%`,
@@ -614,8 +668,8 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                   />
                 )}
 
-                {/* Active Detected / Replacement Text Box */}
-                {!ocrItem.isRemoved && (
+                {/* Active Detected / Replacement Text Box - only if showOcrBoxes or actively selected/editing */}
+                {shouldRenderBox && !ocrItem.isRemoved && (
                   <div
                     data-testid={`canvas-ocr-item-${ocrItem.id}`}
                     style={{
@@ -743,40 +797,64 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
 
           {/* LAYER 2: AUTHENTIC CAPTIK "BEHIND YOU" DEPTH LAYER (z-12) */}
           {isBehindActive && tokenWords.length > 0 && (
-            <CaptikCanvasCaptionOverlay
-              layer="behind"
-              template={activeTemplate}
-              words={tokenWords}
-              activeWordIndex={activeWordIndex}
-              currentTimeSec={currentTime}
-              fontScale={
-                (Number.isFinite(styleOverrides.fontScale) && styleOverrides.fontScale > 0
-                  ? styleOverrides.fontScale
-                  : 1) *
-                (Number.isFinite(styleOverrides.behindHeroScale) && styleOverrides.behindHeroScale > 0
-                  ? styleOverrides.behindHeroScale
-                  : 1)
+            <div
+              className="absolute inset-0 pointer-events-none z-12"
+              style={
+                humanSegStatus.hasHumanSubject
+                  ? {
+                      WebkitMaskImage: `radial-gradient(ellipse ${Math.max(
+                        13,
+                        Math.round(humanSegStatus.shoulderWidthPercent * 0.42)
+                      )}% 15% at ${humanSegStatus.headXPercent}% ${Math.max(
+                        24,
+                        humanSegStatus.headYPercent + 3
+                      )}%, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.28) 58%, rgba(0,0,0,1) 88%)`,
+                      maskImage: `radial-gradient(ellipse ${Math.max(
+                        13,
+                        Math.round(humanSegStatus.shoulderWidthPercent * 0.42)
+                      )}% 15% at ${humanSegStatus.headXPercent}% ${Math.max(
+                        24,
+                        humanSegStatus.headYPercent + 3
+                      )}%, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.28) 58%, rgba(0,0,0,1) 88%)`,
+                    }
+                  : undefined
               }
-              captionXPercent={Number.isFinite(styleOverrides.xOffset) ? styleOverrides.xOffset : 50}
-              captionYPercent={Number.isFinite(styleOverrides.yOffset) ? styleOverrides.yOffset : 76}
-              customTextColor={styleOverrides.primaryColor}
-              customAccentColor={styleOverrides.accentColor}
-              personaMode={styleOverrides.personaMode}
-            />
+            >
+              <CaptikCanvasCaptionOverlay
+                layer="behind"
+                template={activeTemplate}
+                words={tokenWords}
+                activeWordIndex={activeWordIndex}
+                currentTimeSec={currentTime}
+                fontScale={
+                  (Number.isFinite(styleOverrides.fontScale) && styleOverrides.fontScale > 0
+                    ? styleOverrides.fontScale
+                    : 1) *
+                  (Number.isFinite(styleOverrides.behindHeroScale) && styleOverrides.behindHeroScale > 0
+                    ? styleOverrides.behindHeroScale
+                    : 1)
+                }
+                captionXPercent={Number.isFinite(styleOverrides.xOffset) ? styleOverrides.xOffset : 50}
+                captionYPercent={Number.isFinite(styleOverrides.yOffset) ? styleOverrides.yOffset : 76}
+                customTextColor={styleOverrides.primaryColor}
+                customAccentColor={styleOverrides.accentColor}
+                personaMode={styleOverrides.personaMode}
+              />
+            </div>
           )}
 
-          {/* LAYER 3: HUMAN-ONLY SEGMENTED FOREGROUND SILHOUETTE CANVAS (z-20) */}
+          {/* LAYER 3: HUMAN-ONLY SEGMENTED FOREGROUND SILHOUETTE CANVAS (z-20, transparent in live player so <video> is the single face renderer) */}
           {isBehindActive && (
             <canvas
               ref={fgSegmentationCanvasRef}
               data-testid="human-foreground-canvas"
               style={{
-                opacity: humanSegStatus.hasHumanSubject ? 1 : 0,
+                opacity: 0,
                 filter: subjectOutlineSpec
                   ? `drop-shadow(0 -3px 0 ${subjectOutlineSpec.color}) drop-shadow(3px 0 0 ${subjectOutlineSpec.color}) drop-shadow(-3px 0 0 ${subjectOutlineSpec.color})`
                   : undefined,
               }}
-              className="absolute inset-0 w-full h-full object-cover pointer-events-none z-20 transition-opacity duration-150"
+              className="absolute inset-0 w-full h-full object-cover pointer-events-none z-20"
             />
           )}
 
@@ -878,27 +956,45 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
         </div>
       </div>
 
-      {/* Bottom Transport Controls Bar (Matches captik_desk.webp) */}
+      {/* Bottom Transport Controls Bar (Sleek Pro Studio Layout) */}
       <div className="h-11 px-4 border-t border-white/[0.07] bg-[#0b0b0d] flex items-center justify-between text-xs shrink-0">
-        {/* Left: Studio Timecode 00:00:07:07 | 00:00:07:07 */}
+        {/* Left: Studio Timecode */}
         <div className="flex items-center gap-2 font-mono text-xs tabular-nums">
           <span data-testid="player-current-timecode" className="text-[#f5a524] font-semibold">
             {formatTimecode(currentTime)}
           </span>
-          <span className="text-zinc-600">|</span>
+          <span className="text-zinc-600">/</span>
           <span data-testid="player-duration-timecode" className="text-zinc-400">
             {formatTimecode(duration)}
           </span>
         </div>
 
-        {/* Center: Play / Pause + Mute */}
-        <div className="flex items-center gap-3">
+        {/* Center: Skip -1s, Play / Pause, Skip +1s, Mute */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              const nextTime = Math.max(0, Number((currentTime - 1).toFixed(2)));
+              if (bgVideoRef.current) {
+                try {
+                  bgVideoRef.current.currentTime = nextTime;
+                } catch {}
+              }
+              onTimeUpdate(nextTime);
+            }}
+            title="Skip backward 1 second"
+            aria-label="Skip backward 1 second"
+            className="w-7 h-7 rounded-md hover:bg-white/[0.08] text-zinc-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer text-[10px] font-mono"
+          >
+            -1s
+          </button>
+
           <button
             type="button"
             data-testid="player-play-pause-btn"
             onClick={onTogglePlay}
             aria-label={isPlaying ? 'Pause video' : 'Play video'}
-            className="w-8 h-8 rounded-full hover:bg-white/[0.08] text-white flex items-center justify-center transition-colors cursor-pointer"
+            className="w-9 h-9 rounded-full bg-[#f5a524] hover:bg-[#fbbf24] active:scale-95 text-[#120d02] flex items-center justify-center shadow-md transition-all cursor-pointer"
           >
             {isPlaying ? (
               <Pause className="w-4 h-4 fill-current" />
@@ -906,6 +1002,26 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
               <Play className="w-4 h-4 fill-current ml-0.5" />
             )}
           </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              const nextTime = Math.min(duration, Number((currentTime + 1).toFixed(2)));
+              if (bgVideoRef.current) {
+                try {
+                  bgVideoRef.current.currentTime = nextTime;
+                } catch {}
+              }
+              onTimeUpdate(nextTime);
+            }}
+            title="Skip forward 1 second"
+            aria-label="Skip forward 1 second"
+            className="w-7 h-7 rounded-md hover:bg-white/[0.08] text-zinc-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer text-[10px] font-mono"
+          >
+            +1s
+          </button>
+
+          <div className="h-4 w-[1px] bg-white/10 mx-1 hidden sm:block" />
 
           <button
             type="button"
@@ -921,32 +1037,18 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
           </button>
         </div>
 
-        {/* Right: Ratio Selector + Fullscreen (Matches captik_desk.webp) */}
+        {/* Right: Quality Badge + Fullscreen */}
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 bg-[#141418] border border-white/[0.09] rounded-md px-2 py-1">
-            <span className="text-[11px] text-zinc-400 mr-1 hidden sm:inline">Ratio</span>
-            {(['9:16', '16:9', '1:1', '4:5'] as AspectRatioPreset[]).map((r) => (
-              <button
-                key={r}
-                type="button"
-                onClick={() => onChangeAspectRatio(r)}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-bold tabular-nums transition-all cursor-pointer ${
-                  aspectRatio === r
-                    ? 'bg-[#f5a524] text-black'
-                    : 'text-zinc-400 hover:text-white'
-                }`}
-              >
-                {r}
-              </button>
-            ))}
-          </div>
+          <span className="hidden sm:inline px-2 py-0.5 rounded bg-white/[0.06] border border-white/[0.08] text-[10px] font-mono text-zinc-300">
+            {playbackRate !== 1 ? `${playbackRate}x · ` : ''}{aspectRatio}
+          </span>
 
           <button
             type="button"
             onClick={handleFullscreen}
             title="Fullscreen player"
             aria-label="Fullscreen player"
-            className="w-7 h-7 rounded-md bg-[#141418] hover:bg-[#1e1e24] border border-white/[0.09] text-zinc-300 hover:text-white flex items-center justify-center cursor-pointer"
+            className="w-7 h-7 rounded-md bg-[#141418] hover:bg-[#1e1e24] border border-white/[0.09] text-zinc-300 hover:text-white flex items-center justify-center cursor-pointer transition-colors"
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>

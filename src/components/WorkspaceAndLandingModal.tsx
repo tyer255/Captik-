@@ -2304,19 +2304,23 @@ export const StudioModals: React.FC<StudioModalProps> = ({
     }
   };
 
+  const [exportedFileExt, setExportedFileExt] = useState<'mp4' | 'webm'>('webm');
+
   const handleTriggerRealExport = async () => {
     setIsRendering(true);
     setExportError(null);
     setExportProgress(5);
     try {
       const blob = await onRunRealVideoExport((pct) => setExportProgress(pct));
+      const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+      setExportedFileExt(ext);
       const url = URL.createObjectURL(blob);
       setExportedVideoUrl(url);
 
-      // Automatically trigger browser download of the rendered video
+      // Automatically trigger browser download of the rendered full-length high-quality video
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${projectName.replace(/\s+/g, '_')}_${quality}.webm`;
+      a.download = `${projectName.replace(/\s+/g, '_')}_${quality}.${ext}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -2355,7 +2359,7 @@ export const StudioModals: React.FC<StudioModalProps> = ({
                     Create New Video Project
                   </h3>
                   <p className="text-xs text-zinc-400">
-                    Upload a video from your device & run automatic OCR text detection
+                    Upload a video & automatically generate synchronized AI captions from speech
                   </p>
                 </div>
               </div>
@@ -2390,10 +2394,10 @@ export const StudioModals: React.FC<StudioModalProps> = ({
                   <ScanText className="w-4 h-4 text-[#f5a524]" />
                   <div>
                     <div className="text-xs font-bold text-white">
-                      Automatically Detect Text in Video (Real OCR)
+                      AI Speech-to-Caption + Video Frame OCR
                     </div>
                     <div className="text-[11px] text-zinc-400">
-                      Scans video frames with Tesseract OCR to extract editable text & positions
+                      Transcribes spoken voice with Gemini AI & scans burned-in frame text
                     </div>
                   </div>
                 </div>
@@ -2421,23 +2425,23 @@ export const StudioModals: React.FC<StudioModalProps> = ({
                 Select Video File from Your Device
               </div>
               <div className="text-xs text-zinc-400">
-                Supports MP4, WebM, MOV · Creates a brand-new editing project
+                Supports MP4, WebM, MOV · Generates word-by-word captions from spoken audio
               </div>
             </button>
 
-            {/* Option B: Generate a Fresh Video with Custom Burned-In Text to Test OCR */}
+            {/* Option B: Generate a Fresh Video with Spoken Voice & Burned-In Text */}
             <div className="p-3.5 rounded-2xl bg-[#0e0f14] border border-white/[0.08] space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
                   <Film className="w-3.5 h-3.5" />
-                  <span>Or Generate Custom Video with Burned-In Text</span>
+                  <span>Or Generate Spoken Video from Script</span>
                 </span>
                 <span className="text-[10px] font-mono text-zinc-400">
-                  3.6s WebM · 3 Scenes
+                  Spoken Voice + 3 Scenes
                 </span>
               </div>
               <p className="text-[11px] text-zinc-400">
-                Don’t have a test video with burned-in text handy? Customize the 3 frame texts below to synthesize a real video file and run live OCR detection on it:
+                Customize the 3 script lines below to synthesize a real spoken video clip and generate synchronized Gemini AI captions:
               </p>
               <div className="grid grid-cols-3 gap-2">
                 <input
@@ -2446,7 +2450,7 @@ export const StudioModals: React.FC<StudioModalProps> = ({
                   value={scene1Text}
                   onChange={(e) => setScene1Text(e.target.value)}
                   className="bg-[#161820] border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-bold text-white"
-                  placeholder="Scene 1 text"
+                  placeholder="Scene 1 script"
                 />
                 <input
                   type="text"
@@ -2454,7 +2458,7 @@ export const StudioModals: React.FC<StudioModalProps> = ({
                   value={scene2Text}
                   onChange={(e) => setScene2Text(e.target.value)}
                   className="bg-[#161820] border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-bold text-white"
-                  placeholder="Scene 2 text"
+                  placeholder="Scene 2 script"
                 />
                 <input
                   type="text"
@@ -2462,7 +2466,7 @@ export const StudioModals: React.FC<StudioModalProps> = ({
                   value={scene3Text}
                   onChange={(e) => setScene3Text(e.target.value)}
                   className="bg-[#161820] border border-white/10 rounded-lg px-2 py-1.5 text-[11px] font-bold text-white"
-                  placeholder="Scene 3 text"
+                  placeholder="Scene 3 script"
                 />
               </div>
               <button
@@ -2475,12 +2479,12 @@ export const StudioModals: React.FC<StudioModalProps> = ({
                 {isCreatingProject ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Recording Video & Initializing Project...</span>
+                    <span>Recording Video & Generating AI Captions...</span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4" />
-                    <span>Create Video & Run Automatic OCR Detection</span>
+                    <span>Create Video & Generate AI Captions</span>
                   </>
                 )}
               </button>
@@ -2538,7 +2542,7 @@ export const StudioModals: React.FC<StudioModalProps> = ({
               <div className="flex justify-between">
                 <span className="text-zinc-400">Render Resolution</span>
                 <span className="font-mono font-bold text-white">
-                  {quality} (30fps Canvas Burn-In)
+                  {quality} (60fps High-Bitrate Full Video)
                 </span>
               </div>
             </div>
@@ -2547,7 +2551,7 @@ export const StudioModals: React.FC<StudioModalProps> = ({
               <div className="space-y-2" data-testid="export-rendering-state">
                 <div className="flex justify-between text-xs font-semibold">
                   <span className="text-[#f5a524]">
-                    Rendering video frames, OCR replacements & captions...
+                    Rendering full-length {quality} video & captions...
                   </span>
                   <span className="font-mono tabular-nums text-white">
                     {exportProgress}%
@@ -2568,11 +2572,11 @@ export const StudioModals: React.FC<StudioModalProps> = ({
                 <div className="flex items-center justify-between text-xs text-emerald-300 font-bold">
                   <span className="flex items-center gap-1.5">
                     <Check className="w-4 h-4" />
-                    <span>Video Export Complete!</span>
+                    <span>Full {quality} Video Export Complete!</span>
                   </span>
                   <a
                     href={exportedVideoUrl}
-                    download={`${projectName.replace(/\s+/g, '_')}_${quality}.webm`}
+                    download={`${projectName.replace(/\s+/g, '_')}_${quality}.${exportedFileExt}`}
                     className="underline text-[#f5a524]"
                   >
                     Save File Again

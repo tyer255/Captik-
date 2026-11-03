@@ -9,6 +9,10 @@ import {
   TEMPLATE_TABS,
   type CaptionTemplateSpec,
 } from '../data/templatesCatalog.ts';
+import {
+  devanagariToRomanHinglish,
+  phoneticRomanToDevanagari,
+} from './aiCaptionParser.ts';
 
 export type CaptikTemplate = CaptionTemplateSpec;
 
@@ -195,7 +199,7 @@ export function hydrateSegmentsFromWords(
       start: chunk[0].start,
       end: chunk[chunk.length - 1].end,
       words: chunk,
-      behindSubject: built.length % 2 === 0,
+      behindSubject: false,
     });
   }
   return built;
@@ -262,14 +266,386 @@ export function formatSrtTimestamp(seconds: number): string {
   return `${pad2(h)}:${pad2(m)}:${pad2(s)},${pad3(ms)}`;
 }
 
+const HINGLISH_TO_ENGLISH_WORD_MAP: Record<string, string> = {
+  main: 'I',
+  maine: 'I',
+  mujhe: 'me',
+  mera: 'my',
+  meri: 'my',
+  mere: 'my',
+  apna: 'my',
+  apni: 'my',
+  apne: 'my',
+  hum: 'we',
+  hamara: 'our',
+  hamari: 'our',
+  hamare: 'our',
+  aap: 'you',
+  aapko: 'you',
+  aapka: 'your',
+  aapki: 'your',
+  aapke: 'your',
+  tum: 'you',
+  tumhe: 'you',
+  tumhara: 'your',
+  tera: 'your',
+  teri: 'your',
+  tere: 'your',
+  woh: 'that',
+  wo: 'that',
+  yeh: 'this',
+  ye: 'this',
+  iska: 'its',
+  iski: 'its',
+  iske: 'its',
+  uska: 'his',
+  uski: 'her',
+  uske: 'their',
+  bhai: 'bro',
+  dost: 'friend',
+  dosto: 'friends',
+  yaar: 'dude',
+  video: 'video',
+  reel: 'reel',
+  upload: 'upload',
+  template: 'template',
+  choose: 'choose',
+  design: 'design',
+  designing: 'designing',
+  screen: 'screen',
+  portfolio: 'portfolio',
+  focus: 'focus',
+  load: 'load',
+  abhi: 'just',
+  bas: 'just',
+  sirf: 'only',
+  aur: 'and',
+  lekin: 'but',
+  par: 'on',
+  pe: 'on',
+  se: 'from',
+  ko: 'to',
+  mein: 'in',
+  me: 'in',
+  ne: '',
+  ka: 'of',
+  ki: 'of',
+  ke: 'of',
+  karo: 'do',
+  kar: 'do',
+  karna: 'to do',
+  kare: 'do',
+  karenge: 'will do',
+  kiya: 'did',
+  raha: 'working',
+  rahi: 'working',
+  rahe: 'working',
+  'kar-raha': 'designing',
+  'kar-rahi': 'working',
+  'kar-rahe': 'working',
+  hai: 'is',
+  hain: 'are',
+  ho: 'are',
+  hoon: 'am',
+  hun: 'am',
+  tha: 'was',
+  thi: 'was',
+  the: 'were',
+  dikhane: 'show',
+  dikha: 'show',
+  dikhana: 'to show',
+  dikhao: 'show',
+  wala: 'going to',
+  wali: 'going to',
+  wale: 'going to',
+  batana: 'tell',
+  bata: 'tell',
+  batao: 'tell',
+  bataenge: 'will tell',
+  bol: 'speak',
+  bolo: 'speak',
+  dekho: 'look',
+  dekh: 'look',
+  dekhte: 'look',
+  suno: 'listen',
+  sun: 'listen',
+  poora: 'whole',
+  poori: 'whole',
+  poore: 'whole',
+  ready: 'ready',
+  literally: 'literally',
+  minute: 'minute',
+  bahut: 'very',
+  bohot: 'very',
+  thoda: 'a bit',
+  thodi: 'a bit',
+  achha: 'great',
+  acchi: 'good',
+  badiya: 'awesome',
+  badhiya: 'awesome',
+  sahi: 'right',
+  galat: 'wrong',
+  kaise: 'how',
+  kya: 'what',
+  kyun: 'why',
+  kab: 'when',
+  kahan: 'where',
+  kaun: 'who',
+  aaj: 'today',
+  kal: 'tomorrow',
+  shuru: 'start',
+  khatam: 'finish',
+  isko: 'it',
+  usko: 'that',
+  paas: 'with',
+  saath: 'together',
+  bhi: 'also',
+  sab: 'all',
+  sabse: 'most',
+  accha: 'good',
+  kaam: 'work',
+  chal: 'come on',
+  chalo: 'let us',
+  baat: 'talk',
+  karen: 'do',
+  chahiye: 'need',
+  sakte: 'can',
+  paise: 'money',
+  soch: 'think',
+  tarika: 'way',
+  zaruri: 'important',
+  zaroori: 'important',
+  milta: 'get',
+  bante: 'make',
+};
+
+const ENGLISH_TO_HINGLISH_WORD_MAP: Record<string, string> = {
+  i: 'Main',
+  me: 'mujhe',
+  my: 'apna',
+  mine: 'mera',
+  we: 'hum',
+  our: 'hamara',
+  ours: 'hamara',
+  you: 'aap',
+  your: 'aapka',
+  yours: 'aapka',
+  he: 'woh',
+  she: 'woh',
+  they: 'woh',
+  them: 'unko',
+  their: 'unka',
+  it: 'isko',
+  its: 'iska',
+  this: 'yeh',
+  that: 'woh',
+  these: 'ye',
+  those: 'woh',
+  am: 'hoon',
+  is: 'hai',
+  are: 'hain',
+  was: 'tha',
+  were: 'the',
+  be: 'hona',
+  been: 'raha',
+  being: 'hote',
+  have: 'hai',
+  has: 'hai',
+  had: 'tha',
+  do: 'karna',
+  does: 'karta',
+  did: 'kiya',
+  just: 'abhi',
+  now: 'abhi',
+  only: 'sirf',
+  and: 'aur',
+  but: 'lekin',
+  or: 'ya',
+  so: 'toh',
+  the: 'ye',
+  a: 'ek',
+  an: 'ek',
+  whole: 'poori',
+  entire: 'poori',
+  full: 'poora',
+  all: 'sab',
+  focusing: 'focus',
+  focus: 'focus',
+  designing: 'design',
+  design: 'design',
+  going: 'wala',
+  to: 'ko',
+  show: 'dikhane',
+  showing: 'dikha',
+  load: 'load',
+  loading: 'load',
+  portfolio: 'portfolio',
+  screen: 'screen',
+  video: 'video',
+  template: 'template',
+  upload: 'upload',
+  uploaded: 'upload kiya',
+  choose: 'choose',
+  chose: 'choose kiya',
+  ready: 'ready',
+  literally: 'literally',
+  minute: 'minute',
+  tell: 'batana',
+  telling: 'bata',
+  look: 'dekho',
+  listen: 'suno',
+  work: 'kaam',
+  working: 'kaam',
+  make: 'banana',
+  making: 'bana',
+  talk: 'baat',
+  talking: 'baat',
+  bro: 'bhai',
+  brother: 'bhai',
+  friend: 'dost',
+  friends: 'dosto',
+  guys: 'dosto',
+  people: 'log',
+  today: 'aaj',
+  tomorrow: 'kal',
+  yesterday: 'kal',
+  very: 'bahut',
+  great: 'badiya',
+  good: 'achha',
+  right: 'sahi',
+  wrong: 'galat',
+  start: 'shuru',
+  finish: 'khatam',
+  important: 'zaroori',
+  can: 'sakte',
+  will: 'karenge',
+  how: 'kaise',
+  why: 'kyun',
+  what: 'kya',
+  when: 'kab',
+  where: 'kahan',
+  who: 'kaun',
+  need: 'chahiye',
+  want: 'chahiye',
+  also: 'bhi',
+  together: 'saath',
+};
+
+const COMMON_DEVANAGARI_MAP: Record<string, string> = {
+  main: 'मैं',
+  maine: 'मैंने',
+  mujhe: 'मुझे',
+  mera: 'मेरा',
+  meri: 'मेरी',
+  mere: 'मेरे',
+  apna: 'अपना',
+  apni: 'अपनी',
+  apne: 'अपने',
+  hum: 'हम',
+  hamara: 'हमारा',
+  aap: 'आप',
+  aapko: 'आपको',
+  aapka: 'आपका',
+  tum: 'तुम',
+  yeh: 'यह',
+  ye: 'ये',
+  woh: 'वह',
+  wo: 'वो',
+  video: 'वीडियो',
+  upload: 'अपलोड',
+  kiya: 'किया',
+  abhi: 'अभी',
+  design: 'डिजाइन',
+  designing: 'डिजाइन',
+  screen: 'स्क्रीन',
+  portfolio: 'पोर्टफोलियो',
+  focus: 'फोकस',
+  focusing: 'फोकस',
+  poora: 'पूरा',
+  poori: 'पूरी',
+  dikhane: 'दिखाने',
+  dikha: 'दिखा',
+  wala: 'वाला',
+  wali: 'वाली',
+  hoon: 'हूँ',
+  hai: 'है',
+  hain: 'हैं',
+  bhai: 'भाई',
+  dost: 'दोस्त',
+  dosto: 'दोस्तों',
+  aaj: 'आज',
+  kaise: 'कैसे',
+  karna: 'करना',
+  load: 'लोड',
+  ready: 'रेडी',
+  literally: 'सच में',
+  minute: 'मिनट',
+  aur: 'और',
+  lekin: 'लेकिन',
+  bas: 'बस',
+  sirf: 'सिर्फ',
+  par: 'पर',
+  ko: 'को',
+  mein: 'में',
+  me: 'में',
+  se: 'से',
+  i: 'मैं',
+  am: 'हूँ',
+  just: 'अभी',
+  the: 'यह',
+  whole: 'पूरी',
+  going: 'वाला',
+  to: 'को',
+  show: 'दिखाने',
+  you: 'आपको',
+  it: 'इसको',
+  work: 'काम',
+  great: 'बढ़िया',
+  good: 'अच्छा',
+  start: 'शुरू',
+  finish: 'खत्म',
+  tell: 'बताना',
+  listen: 'सुनो',
+  look: 'देखो',
+};
+
 /**
  * Returns the localized text for a word according to the active Indian language script.
+ * Seamlessly translates between Romanized Hinglish, English Translation, Hindi Devanagari,
+ * Tamil, and Bengali scripts across both English and Hindi video uploads.
  */
 export function getWordTextForScript(word: CaptionWord, scriptId: string): string {
+  const raw = (word.text || '').trim();
+  const leadingPunct = (raw.match(/^[^\p{L}\p{M}\p{N}]+/u) || [''])[0];
+  const trailingPunct = (raw.match(/[^\p{L}\p{M}\p{N}]+$/u) || [''])[0];
+  const core = raw.slice(leadingPunct.length, raw.length - trailingPunct.length);
+  const lowerCore = core.toLowerCase();
+
   switch (scriptId) {
     case 'devanagari':
-    case 'hi-deva':
-      return word.hiDeva || word.text;
+    case 'hi-deva': {
+      // 1. If word already has valid Devanagari script stored, use it
+      if (word.hiDeva && /[\u0900-\u097F]/.test(word.hiDeva)) {
+        return word.hiDeva;
+      }
+      // 2. If core text is already Devanagari, preserve it
+      if (/[\u0900-\u097F]/.test(core)) {
+        return word.text;
+      }
+      // 3. Direct Devanagari dictionary lookup
+      const directDeva = COMMON_DEVANAGARI_MAP[lowerCore];
+      if (directDeva) {
+        return `${leadingPunct}${directDeva}${trailingPunct}`;
+      }
+      // 4. If core is English word, translate to Hinglish first, then Devanagari
+      const hiWord = ENGLISH_TO_HINGLISH_WORD_MAP[lowerCore];
+      if (hiWord && COMMON_DEVANAGARI_MAP[hiWord.toLowerCase()]) {
+        return `${leadingPunct}${COMMON_DEVANAGARI_MAP[hiWord.toLowerCase()]}${trailingPunct}`;
+      }
+      // 5. Phonetic transliteration into Devanagari
+      const transliterated = phoneticRomanToDevanagari(core);
+      return `${leadingPunct}${transliterated}${trailingPunct}`;
+    }
     case 'tamil':
     case 'ta':
       return word.ta || word.text;
@@ -277,11 +653,47 @@ export function getWordTextForScript(word: CaptionWord, scriptId: string): strin
     case 'bn':
       return word.bn || word.text;
     case 'english':
-    case 'en':
+    case 'en': {
+      // 1. If core is already Devanagari, romanize it first
+      const romanCore = /[\u0900-\u097F]/.test(core)
+        ? devanagariToRomanHinglish(core)
+        : core;
+      const lowerRoman = romanCore.toLowerCase();
+
+      // 2. Translate Hinglish/Hindi word to genuine English
+      const enMap = HINGLISH_TO_ENGLISH_WORD_MAP[lowerRoman];
+      if (enMap !== undefined) {
+        if (!enMap) return '';
+        const cap = core.length > 0 && core[0] === core[0].toUpperCase();
+        const formatted = cap ? enMap.charAt(0).toUpperCase() + enMap.slice(1) : enMap;
+        return `${leadingPunct}${formatted}${trailingPunct}`;
+      }
+
+      // 3. If explicit non-identical English translation is stored, use it
+      if (word.en && word.en.trim().length > 0 && word.en.toLowerCase() !== lowerCore) {
+        return word.en;
+      }
+
       return word.en || word.text;
+    }
     case 'hinglish':
-    default:
+    default: {
+      // 1. If core is Devanagari, convert to natural Romanized Hinglish
+      if (/[\u0900-\u097F]/.test(core)) {
+        const romanized = devanagariToRomanHinglish(core);
+        return `${leadingPunct}${romanized}${trailingPunct}`;
+      }
+
+      // 2. If original word was English and user selected Hinglish, translate to natural Romanized Hindi
+      const hiMap = ENGLISH_TO_HINGLISH_WORD_MAP[lowerCore];
+      if (hiMap) {
+        const cap = core.length > 0 && core[0] === core[0].toUpperCase();
+        const formatted = cap ? hiMap.charAt(0).toUpperCase() + hiMap.slice(1) : hiMap;
+        return `${leadingPunct}${formatted}${trailingPunct}`;
+      }
+
       return word.text;
+    }
   }
 }
 

@@ -347,27 +347,7 @@ export const BottomTimeline: React.FC<BottomTimelineProps> = ({
             <span className="hidden sm:inline">Split</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => onSeekTo(Math.max(0, Number((currentTime - 1).toFixed(2))))}
-            title="Skip backward 1 second"
-            aria-label="Skip backward 1 second"
-            className="p-1.5 rounded hover:bg-white/[0.07] text-zinc-400 hover:text-white cursor-pointer"
-          >
-            <SkipBack className="w-3.5 h-3.5" />
-          </button>
 
-          <button
-            type="button"
-            onClick={() =>
-              onSeekTo(Math.min(safeDuration, Number((currentTime + 1).toFixed(2))))
-            }
-            title="Skip forward 1 second"
-            aria-label="Skip forward 1 second"
-            className="p-1.5 rounded hover:bg-white/[0.07] text-zinc-400 hover:text-white cursor-pointer"
-          >
-            <SkipForward className="w-3.5 h-3.5" />
-          </button>
 
           <button
             type="button"
@@ -975,14 +955,14 @@ export const BottomTimeline: React.FC<BottomTimelineProps> = ({
                       );
                     })}
 
-                    <div className="absolute inset-y-0 left-1.5 flex items-center gap-1 pointer-events-none">
+                    <div className="absolute inset-y-0 right-2.5 flex items-center gap-1 pointer-events-none z-20">
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           onToggleMuteAudioClip?.(aClip.id);
                         }}
-                        className="px-1.5 py-0.5 rounded bg-black/75 border border-white/10 flex items-center gap-1 text-[9px] font-semibold text-teal-200 pointer-events-auto cursor-pointer"
+                        className="px-1.5 py-0.5 rounded bg-black/80 border border-white/10 flex items-center gap-1 text-[9px] font-semibold text-teal-200 pointer-events-auto cursor-pointer"
                       >
                         {aClip.muted ? (
                           <VolumeX className="w-2.5 h-2.5 text-rose-400" />

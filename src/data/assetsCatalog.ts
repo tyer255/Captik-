@@ -105,7 +105,7 @@ export const MEDIA_LIBRARY_ASSETS: MediaAssetItem[] = [
     durationMs: 7070,
     resolution: '1080p',
     aspect: '9:16',
-    videoUrl: '/assets/terrace_reel.mp4',
+    videoUrl: '/assets/raw_take.mp4',
     posterUrl: '/assets/terrace_poster.webp',
     accentColor: '#10B981',
     speakerName: 'Rohan · Rooftop Take',

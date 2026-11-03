@@ -16,6 +16,8 @@ import {
   buildVideoFilterCss,
   DEFAULT_ADJUSTMENTS,
   HYDRATED_INITIAL_SEGMENTS,
+  getWordTextForScript,
+  type CaptionWord,
 } from './editorLogic.ts';
 import {
   computeSampleTimestamps,
@@ -234,6 +236,85 @@ describe('editorLogic pure functions', () => {
     assert.equal(proj.duration, 8.5);
     assert.equal(proj.ocrStatus, 'idle');
     assert.equal(proj.segments.length, 0);
+  });
+
+  it('translates words accurately between Hinglish, Devanagari, and English Translation', () => {
+    // English words translated to Hinglish and Devanagari
+    const englishWord1: CaptionWord = {
+      id: 'w-en-1',
+      text: 'I',
+      hiDeva: '',
+      ta: '',
+      bn: '',
+      en: 'I',
+      start: 0,
+      end: 0.3,
+      emphasis: 'none',
+    };
+    assert.equal(getWordTextForScript(englishWord1, 'hinglish'), 'Main');
+    assert.equal(getWordTextForScript(englishWord1, 'devanagari'), 'मैं');
+    assert.equal(getWordTextForScript(englishWord1, 'english'), 'I');
+
+    const englishWord2: CaptionWord = {
+      id: 'w-en-2',
+      text: 'designing',
+      hiDeva: '',
+      ta: '',
+      bn: '',
+      en: 'designing',
+      start: 0.3,
+      end: 0.8,
+      emphasis: 'green',
+    };
+    assert.equal(getWordTextForScript(englishWord2, 'hinglish'), 'design');
+    assert.equal(getWordTextForScript(englishWord2, 'devanagari'), 'डिजाइन');
+    assert.equal(getWordTextForScript(englishWord2, 'english'), 'designing');
+
+    // Hinglish words translated to English Translation and Devanagari
+    const hinglishWord1: CaptionWord = {
+      id: 'w-hi-1',
+      text: 'Maine',
+      hiDeva: 'मैंने',
+      ta: '',
+      bn: '',
+      en: 'Maine',
+      start: 0,
+      end: 0.4,
+      emphasis: 'none',
+    };
+    assert.equal(getWordTextForScript(hinglishWord1, 'hinglish'), 'Maine');
+    assert.equal(getWordTextForScript(hinglishWord1, 'english'), 'I');
+    assert.equal(getWordTextForScript(hinglishWord1, 'devanagari'), 'मैंने');
+
+    const hinglishWord2: CaptionWord = {
+      id: 'w-hi-2',
+      text: 'poori',
+      hiDeva: '',
+      ta: '',
+      bn: '',
+      en: 'poori',
+      start: 0.4,
+      end: 0.8,
+      emphasis: 'none',
+    };
+    assert.equal(getWordTextForScript(hinglishWord2, 'hinglish'), 'poori');
+    assert.equal(getWordTextForScript(hinglishWord2, 'english'), 'whole');
+    assert.equal(getWordTextForScript(hinglishWord2, 'devanagari'), 'पूरी');
+
+    const hinglishWord3: CaptionWord = {
+      id: 'w-hi-3',
+      text: 'dikhane',
+      hiDeva: '',
+      ta: '',
+      bn: '',
+      en: 'dikhane',
+      start: 0.8,
+      end: 1.2,
+      emphasis: 'amber',
+    };
+    assert.equal(getWordTextForScript(hinglishWord3, 'hinglish'), 'dikhane');
+    assert.equal(getWordTextForScript(hinglishWord3, 'english'), 'show');
+    assert.equal(getWordTextForScript(hinglishWord3, 'devanagari'), 'दिखाने');
   });
 });
 
