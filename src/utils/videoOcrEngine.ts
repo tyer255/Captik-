@@ -843,10 +843,10 @@ export function getExportCanvasDimensions(
   const shortEdge = quality === '4K' ? 1440 : quality === '720p' ? 720 : 1080;
   const videoBitsPerSecond =
     quality === '4K'
-      ? 28_000_000
+      ? 14_000_000
       : quality === '1080p'
-      ? 16_000_000
-      : 8_000_000;
+      ? 8_000_000
+      : 4_500_000;
 
   if (aspectRatio === '16:9') {
     return {
@@ -1037,7 +1037,8 @@ export async function exportEditedVideoToBlob(params: {
         behindLayerCtx.textAlign = 'center';
         behindLayerCtx.textBaseline = 'middle';
         behindLayerCtx.shadowColor = 'rgba(0,0,0,0.75)';
-        behindLayerCtx.shadowBlur = Math.round(18 * resScale);
+        behindLayerCtx.shadowBlur = Math.min(4, Math.round(3 * resScale));
+        behindLayerCtx.shadowOffsetY = Math.round(2 * resScale);
         behindLayerCtx.fillStyle =
           styleOverrides.accentColor ||
           activeTemplate.emphasisColor ||
@@ -1138,7 +1139,8 @@ export async function exportEditedVideoToBlob(params: {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.shadowColor = 'rgba(0,0,0,0.8)';
-      ctx.shadowBlur = Math.round(10 * resScale);
+      ctx.shadowBlur = Math.min(4, Math.round(3 * resScale));
+      ctx.shadowOffsetY = Math.round(2 * resScale);
       ctx.fillStyle = ov.color || '#F5A524';
       ctx.fillText(ov.label, ox, oy);
       ctx.restore();
@@ -1441,12 +1443,34 @@ export async function exportEditedVideoToBlob(params: {
     }
     recorder.stop();
   }
-  const finalBlob = await finished;
+  const rawRecordedBlob = await finished;
   if (playingWithAudio) {
     recordStream.getTracks().forEach((t) => t.stop());
   }
   video.src = '';
+
+  // Remux recorded blob via FFmpeg endpoint into smooth constant-fps MP4 with faststart moov header
+  try {
+    onProgress(96);
+    const remuxResp = await fetch('/api/export/remux', {
+      method: 'POST',
+      headers: {
+        'Content-Type': rawRecordedBlob.type || 'video/webm',
+      },
+      body: rawRecordedBlob,
+    });
+    if (remuxResp.ok) {
+      const remuxedBlob = await remuxResp.blob();
+      if (remuxedBlob && remuxedBlob.size > 1000) {
+        onProgress(100);
+        return new Blob([remuxedBlob], { type: 'video/mp4' });
+      }
+    }
+  } catch {
+    // Fall back to direct browser blob if server remux is unavailable
+  }
+
   onProgress(100);
-  return finalBlob;
+  return rawRecordedBlob;
 }
 

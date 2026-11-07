@@ -286,8 +286,8 @@ export async function generateAiCaptionsFromVideo(params: {
 
   onProgress?.({
     phase: 'extracting_audio',
-    percent: 24,
-    statusMessage: 'Extracting spoken audio waveform & voice activity windows...',
+    percent: 18,
+    statusMessage: 'Extracting 16kHz audio waveform & voice activity windows...',
   });
 
   const [audioResult, frameResult] = await Promise.all([
@@ -302,30 +302,37 @@ export async function generateAiCaptionsFromVideo(params: {
 
   onProgress?.({
     phase: 'transcribing',
-    percent: 48,
-    statusMessage: 'Analyzing speech cadence & language phonetics with Captik AI...',
+    percent: 36,
+    statusMessage: 'Transcribing spoken words with ReelCaption AI...',
   });
 
-  let currentPct = 54;
+  let currentPct = 38;
   const progressMessages = [
-    'Transcribing spoken audio waveform with Captik AI...',
-    'Analyzing speech cadence & language phonetics...',
+    'Listening to audio with ReelCaption AI engine...',
+    'Detecting spoken Hindi & Hinglish phonetics...',
+    'Transcribing words and timing each syllable...',
     'Aligning word-level timestamps with voice peaks...',
-    'Syncing Hindi & Hinglish caption markers...',
+    'Generating synchronized Hindi & Romanized Hinglish segments...',
     'Formatting high-impact caption cards...',
   ];
   let msgIdx = 0;
 
   const progressInterval = setInterval(() => {
-    // Continuously advance progress smoothly without ever freezing or capping at 84%
-    currentPct = Math.min(94, Math.round(currentPct + (95 - currentPct) * 0.14 + 0.6));
+    // Steadily advance progress from 38% to 94% smoothly without pausing or freezing
+    if (currentPct < 60) {
+      currentPct += 2.2;
+    } else if (currentPct < 80) {
+      currentPct += 1.4;
+    } else if (currentPct < 94) {
+      currentPct += 0.7;
+    }
     msgIdx = (msgIdx + 1) % progressMessages.length;
     onProgress?.({
       phase: 'transcribing',
-      percent: currentPct,
+      percent: Math.round(Math.min(94, currentPct)),
       statusMessage: progressMessages[msgIdx],
     });
-  }, 180);
+  }, 300);
 
   let response: Response;
   try {
@@ -342,6 +349,7 @@ export async function generateAiCaptionsFromVideo(params: {
         frameSamples: audioResult.hasAudibleSpeech ? [] : frameResult.frames,
         duration: effectiveDuration,
         scriptId,
+        linesMode,
         customSpokenScript: customSpokenScript?.trim() || undefined,
         detectedTextsHint: detectedTextsHint?.trim() || undefined,
         fileName,

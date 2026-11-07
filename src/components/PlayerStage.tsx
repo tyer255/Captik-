@@ -17,6 +17,8 @@ import {
   Pencil,
   Check,
   Upload,
+  Sparkles,
+  Wand2,
 } from 'lucide-react';
 import { LUT_FILTERS, type MediaAssetItem } from '../data/assetsCatalog';
 import type { CaptionTemplateSpec } from '../data/templatesCatalog';
@@ -81,6 +83,7 @@ interface PlayerStageProps {
   onTriggerOcrScan: () => void;
   ocrProgress: OcrScanProgress | null;
   aiCaptionProgress?: AiCaptionProgress | null;
+  onTriggerAiCaptions?: () => void;
   onOpenNewProjectModal: () => void;
   playbackRate?: number;
 }
@@ -113,6 +116,7 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
   onTriggerOcrScan,
   ocrProgress,
   aiCaptionProgress,
+  onTriggerAiCaptions,
   onOpenNewProjectModal,
   playbackRate = 1,
 }) => {
@@ -934,6 +938,59 @@ export const PlayerStage: React.FC<PlayerStageProps> = ({
                 customAccentColor={styleOverrides.accentColor}
                 personaMode={styleOverrides.personaMode}
               />
+            </div>
+          )}
+
+          {/* In-Canvas ReelCaption AI Generation Card while Transcribing */}
+          {segments.length === 0 && aiCaptionProgress && aiCaptionProgress.phase !== 'error' && (
+            <div
+              data-testid="stage-ai-transcribing-card"
+              className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-black/60 backdrop-blur-xs text-center pointer-events-none"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-[#f5a524]/20 border border-[#f5a524]/40 flex items-center justify-center text-[#f5a524] mb-3 animate-pulse shadow-lg">
+                <Sparkles className="w-6 h-6 text-[#f5a524]" />
+              </div>
+              <div className="text-sm font-extrabold text-white mb-1 tracking-wide">
+                Creating ReelCaption AI Captions...
+              </div>
+              <p className="text-[11px] text-amber-200/90 max-w-xs mb-3 font-medium">
+                {aiCaptionProgress.statusMessage}
+              </p>
+              <div className="w-48 h-1.5 rounded-full bg-zinc-800 overflow-hidden shadow-inner">
+                <div
+                  style={{ width: `${aiCaptionProgress.percent}%` }}
+                  className="h-full bg-[#f5a524] transition-all duration-200"
+                />
+              </div>
+              <span className="font-mono text-[10px] text-zinc-400 mt-1.5 tabular-nums">
+                {aiCaptionProgress.percent}%
+              </span>
+            </div>
+          )}
+
+          {/* Empty Captions Prompt for Uploaded Video */}
+          {segments.length === 0 && (!aiCaptionProgress || aiCaptionProgress.phase === 'error') && (
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 text-center pointer-events-none">
+              <div className="p-4 rounded-2xl bg-black/75 backdrop-blur-md border border-white/15 flex flex-col items-center gap-2 max-w-xs pointer-events-auto shadow-2xl">
+                <div className="w-9 h-9 rounded-xl bg-[#f5a524]/20 text-[#f5a524] flex items-center justify-center">
+                  <Wand2 className="w-5 h-5 text-[#f5a524]" />
+                </div>
+                <div className="text-xs font-bold text-white">
+                  No captions generated yet
+                </div>
+                <p className="text-[10.5px] text-zinc-400 leading-relaxed">
+                  Transcribe spoken voice using ReelCaption AI for synchronized word-level captions.
+                </p>
+                <button
+                  type="button"
+                  data-testid="canvas-trigger-ai-captions-btn"
+                  onClick={() => onTriggerAiCaptions?.()}
+                  className="mt-1 px-4 py-2 rounded-xl bg-[#f5a524] hover:bg-[#fbbf24] text-black font-extrabold text-xs transition-all shadow-md cursor-pointer flex items-center gap-1.5"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Generate AI Captions</span>
+                </button>
+              </div>
             </div>
           )}
 

@@ -19,6 +19,7 @@ export type CaptikTemplate = CaptionTemplateSpec;
 export interface CaptionWord {
   id: string;
   text: string;
+  hinglish?: string;
   hiDeva: string;
   ta: string;
   bn: string;
@@ -678,6 +679,9 @@ export function getWordTextForScript(word: CaptionWord, scriptId: string): strin
     }
     case 'hinglish':
     default: {
+      if (word.hinglish && word.hinglish.trim().length > 0) {
+        return word.hinglish;
+      }
       // 1. If core is Devanagari, convert to natural Romanized Hinglish
       if (/[\u0900-\u097F]/.test(core)) {
         const romanized = devanagariToRomanHinglish(core);

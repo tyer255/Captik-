@@ -702,8 +702,12 @@ export default function App() {
         yOffset: Number.isFinite(rawOverrides?.yOffset) ? rawOverrides.yOffset : 76,
         xOffset: Number.isFinite(rawOverrides?.xOffset) ? rawOverrides.xOffset : 50,
       });
-      setAdjustments(target.adjustments || DEFAULT_ADJUSTMENTS);
-      const rawTargetSegs = target.segments || HYDRATED_INITIAL_SEGMENTS;
+      const rawTargetSegs =
+        target.segments && target.segments.length > 0
+          ? target.segments
+          : target.isCustomUpload
+          ? []
+          : HYDRATED_INITIAL_SEGMENTS;
       const cleanTargetSegs =
         activeScript !== 'english' && hasEnglishTranslatedHindiBug(rawTargetSegs)
           ? upgradeSegmentsToHinglishMultiScript(rawTargetSegs)
@@ -748,8 +752,8 @@ export default function App() {
           posterUrl: target.posterUrl || '/assets/terrace_poster.webp',
           accentColor: '#f5a524',
           speakerName: target.isCustomUpload ? 'Uploaded Video' : 'Studio Take',
-          languageLabel: 'Hinglish + OCR',
-          words: MEDIA_LIBRARY_ASSETS[0].words,
+          languageLabel: target.isCustomUpload ? 'ReelCaption AI' : 'Hinglish + OCR',
+          words: target.isCustomUpload ? [] : MEDIA_LIBRARY_ASSETS[0].words,
         });
       }
     },
@@ -1032,8 +1036,8 @@ export default function App() {
         posterUrl: meta.posterDataUrl,
         accentColor: '#f5a524',
         speakerName: 'Uploaded Video',
-        languageLabel: 'Gemini AI + OCR',
-        words: MEDIA_LIBRARY_ASSETS[0].words,
+        languageLabel: 'ReelCaption AI',
+        words: [],
       };
 
       setProjects((prev) => [newProj, ...prev]);
@@ -1310,6 +1314,7 @@ export default function App() {
           words: seg.words.map((w) => ({
             ...w,
             text: getWordTextForScript(w, scriptId),
+            hinglish: w.hinglish || getWordTextForScript(w, 'hinglish'),
             hiDeva: getWordTextForScript(w, 'devanagari'),
             en: getWordTextForScript(w, 'english'),
           })),
@@ -1933,6 +1938,7 @@ export default function App() {
               }
               ocrProgress={ocrProgress}
               aiCaptionProgress={aiCaptionProgress}
+              onTriggerAiCaptions={() => void handleGenerateAiCaptions()}
               onOpenNewProjectModal={() => setNewProjectModalOpen(true)}
               playbackRate={playbackRate}
             />

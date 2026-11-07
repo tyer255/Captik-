@@ -3,6 +3,7 @@ import type { CaptionSegment, CaptionWord } from './editorLogic.ts';
 export interface RawAiWord {
   text?: string;
   word?: string;
+  hinglish?: string;
   hiDeva?: string;
   en?: string;
   ta?: string;
@@ -192,6 +193,7 @@ function interpolateWordTimesInWindow(
     return {
       id: `w-ai-${segIdx + 1}-${idx + 1}`,
       text,
+      hinglish: rw.hinglish || (multi.text || rw.text),
       hiDeva: (rw.hiDeva || multi.hiDeva || text).trim(),
       en: (rw.en || multi.en || text).trim(),
       ta: (rw.ta || text).trim(),
@@ -2640,8 +2642,9 @@ export function buildSpeechAlignedCaptionPayload(params: {
 
   let rawScript = cleanSpokenScriptText(params.scriptText || '');
   if (!rawScript) {
-    rawScript =
-      "Maine bas video upload kiya, ek template choose kiya, aur literally ek minute mein captions ready. That's it.";
+    rawScript = params.fileName
+      ? params.fileName.replace(/\.[^/.]+$/, '').replace(/[_.-]+/g, ' ').trim()
+      : 'Video captions';
   }
 
   // Split script into words
@@ -2650,7 +2653,7 @@ export function buildSpeechAlignedCaptionPayload(params: {
     .filter((t) => Boolean(t) && !isGibberishToken(t));
 
   if (allTokens.length === 0) {
-    allTokens.push('Maine', 'bas', 'video', 'upload', 'kiya!');
+    allTokens.push('Video', 'captions');
   }
 
   // Group into natural 2-4 word caption phrases, breaking at punctuation (, . ! ? ।)
