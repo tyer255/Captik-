@@ -252,6 +252,133 @@ async function extractDownsampledWavFromVideo(
   };
 }
 
+function parseSerovalNode(node: any, idMap = new Map<number, any>()): any {
+  if (!node || typeof node !== 'object') return node;
+  const id = node.i;
+  let result: any;
+  switch (node.t) {
+    case 0:
+      result = typeof node.s === 'number' ? node.s : Number(node.s);
+      break;
+    case 1:
+      result = String(node.s);
+      break;
+    case 2:
+      result = Boolean(node.s);
+      break;
+    case 3:
+      result = undefined;
+      break;
+    case 4:
+      result = null;
+      break;
+    case 9:
+      result = [];
+      if (id !== undefined) idMap.set(id, result);
+      if (Array.isArray(node.a)) {
+        for (const item of node.a) {
+          result.push(parseSerovalNode(item, idMap));
+        }
+      }
+      return result;
+    case 10:
+      result = {};
+      if (id !== undefined) idMap.set(id, result);
+      if (node.p && Array.isArray(node.p.k) && Array.isArray(node.p.v)) {
+        for (let idx = 0; idx < node.p.k.length; idx++) {
+          const key = node.p.k[idx];
+          const valNode = node.p.v[idx];
+          result[key] = parseSerovalNode(valNode, idMap);
+        }
+      }
+      return result;
+    default:
+      if (node.o !== undefined && idMap.has(node.o)) {
+        return idMap.get(node.o);
+      }
+      return node.s !== undefined ? node.s : node;
+  }
+  if (id !== undefined) idMap.set(id, result);
+  return result;
+}
+
+async function transcribeDirectWithReelCaptionClient(
+  audioBase64: string,
+  scriptId: string
+): Promise<{ language?: string; rawWords: any[] } | null> {
+  const payload = {
+    t: {
+      t: 10,
+      i: 0,
+      p: {
+        k: ['data'],
+        v: [
+          {
+            t: 10,
+            i: 1,
+            p: {
+              k: ['audioBase64'],
+              v: [{ t: 1, s: audioBase64 }],
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  try {
+    const res = await fetch(
+      'https://reel-lingo-caption-studio.lovable.app/_serverFn/583f13a92f82120d39e37a767cba7c57a7688ed0fd5431d572eb3afb82c11939',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept':
+            'application/x-tss-framed, application/x-ndjson, application/json',
+          'x-tsr-serverfn': 'true',
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+
+    if (!res.ok) return null;
+    const rawJson = await res.json();
+    const parsed = parseSerovalNode(rawJson);
+    if (parsed?.result && Array.isArray(parsed.result.segments)) {
+      const rawWords = parsed.result.segments.map((seg: any) => {
+        const hinglishText = (seg.hinglish || seg.original || '').trim();
+        const hindiText = (seg.hindi || seg.original || hinglishText).trim();
+        const englishText = (seg.english || seg.original || hinglishText).trim();
+
+        let activeText = hinglishText;
+        if (scriptId === 'devanagari' || scriptId === 'hi-deva') {
+          activeText = hindiText;
+        } else if (scriptId === 'english' || scriptId === 'en') {
+          activeText = englishText;
+        }
+
+        return {
+          text: activeText,
+          hinglish: hinglishText,
+          hiDeva: hindiText,
+          en: englishText,
+          start: Number(seg.start),
+          end: Number(seg.end),
+        };
+      });
+
+      return {
+        language: parsed.result.language || 'Hinglish (Hindi + English mix)',
+        rawWords,
+      };
+    }
+    return null;
+  } catch (err) {
+    console.error('[ReelCaption Client Fallback] Error:', err);
+    return null;
+  }
+}
+
 /**
  * Main client-to-server pipeline that extracts the spoken audio track, acoustic speech windows,
  * and keyframes from any video in the editor, sends it to the server-side Gemini API endpoint
@@ -318,7 +445,6 @@ export async function generateAiCaptionsFromVideo(params: {
   let msgIdx = 0;
 
   const progressInterval = setInterval(() => {
-    // Steadily advance progress from 38% to 94% smoothly without pausing or freezing
     if (currentPct < 60) {
       currentPct += 2.2;
     } else if (currentPct < 80) {
@@ -334,7 +460,7 @@ export async function generateAiCaptionsFromVideo(params: {
     });
   }, 300);
 
-  let response: Response;
+  let response: Response | null = null;
   try {
     response = await fetch('/api/captions/generate', {
       method: 'POST',
@@ -355,19 +481,41 @@ export async function generateAiCaptionsFromVideo(params: {
         fileName,
       }),
     });
+  } catch {
+    // Network or server endpoint unreachable
   } finally {
     clearInterval(progressInterval);
   }
 
-  if (!response.ok) {
-    let errText = `Server returned ${response.status}`;
+  let data: (RawAiCaptionPayload & { detectedLanguage?: string }) | null = null;
+
+  if (response && response.ok) {
     try {
-      const errJson = (await response.json()) as { error?: string };
-      if (errJson?.error) errText = errJson.error;
+      data = await response.json();
     } catch {
-      // ignore
+      data = null;
     }
-    throw new Error(errText);
+  }
+
+  // If server API returned 404 (e.g. Vercel static deployment) or failed, run client-side ReelCaption fallback!
+  if (!data && audioResult.audioBase64) {
+    console.warn('[AI Caption Engine] Backend endpoint returned error/404. Activating direct ReelCaption client fallback...');
+    const directResult = await transcribeDirectWithReelCaptionClient(
+      audioResult.audioBase64,
+      scriptId
+    );
+
+    if (directResult && directResult.rawWords.length > 0) {
+      data = {
+        detectedLanguage: directResult.language,
+        transcript: directResult.rawWords.map((w) => w.text).join(' '),
+        words: directResult.rawWords,
+      };
+    }
+  }
+
+  if (!data) {
+    throw new Error('ReelCaption AI was unable to transcribe audio in this video. Please check your network connection or try another video.');
   }
 
   onProgress?.({
@@ -375,10 +523,6 @@ export async function generateAiCaptionsFromVideo(params: {
     percent: 96,
     statusMessage: 'Synchronizing word-level timestamps & Indian language scripts...',
   });
-
-  const data = (await response.json()) as RawAiCaptionPayload & {
-    detectedLanguage?: string;
-  };
 
   const segments = normalizeAiGeneratedSegments(
     data,
