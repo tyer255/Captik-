@@ -366,16 +366,13 @@ function synthesizeFormantSpeechWavBase64(text: string, durationSec = 5.4): stri
 
 export const app = express();
 
-async function startServer() {
-  const PORT = Number(process.env.PORT) || 3000;
-
-  app.use(express.json({ limit: '50mb' }));
-  app.use(
-    express.raw({
-      type: ['video/*', 'application/octet-stream'],
-      limit: '250mb',
-    })
-  );
+app.use(express.json({ limit: '50mb' }));
+app.use(
+  express.raw({
+    type: ['video/*', 'application/octet-stream'],
+    limit: '250mb',
+  })
+);
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', reelCaptionReady: true, geminiConfigured: Boolean(process.env.GEMINI_API_KEY) });
@@ -799,6 +796,9 @@ async function startServer() {
       mimeType: 'audio/wav',
     });
   });
+
+async function startServer() {
+  const PORT = Number(process.env.PORT) || 3000;
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');

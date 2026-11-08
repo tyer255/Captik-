@@ -196,7 +196,8 @@ async function extractDownsampledWavFromVideo(
       const bufferCopy = arrayBuffer.slice(0);
       const decoded = await audioCtx.decodeAudioData(bufferCopy);
       const actualDuration = Math.min(maxDurationSec, decoded.duration || 6);
-      const targetSampleRate = 16000;
+      // Keep base64 payload safely under Vercel Serverless 4.5 MB request limit
+      const targetSampleRate = actualDuration > 45 ? 12000 : 16000;
       const frameCount = Math.max(1600, Math.ceil(actualDuration * targetSampleRate));
 
       const offlineCtx = new OfflineAudioContext(1, frameCount, targetSampleRate);
