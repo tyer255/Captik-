@@ -15,6 +15,7 @@ import {
   upgradeSegmentsToHinglishMultiScript,
   normalizeAiGeneratedSegments,
 } from './src/utils/aiCaptionParser.ts';
+import { handleTemplatesApi } from './src/utils/templatesApiHandler.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -376,6 +377,20 @@ app.use(
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', reelCaptionReady: true, geminiConfigured: Boolean(process.env.GEMINI_API_KEY) });
+  });
+
+  /**
+   * GET /api/templates and GET /api/text-templates
+   * Captik Dedicated Native Text Templates API endpoint:
+   * Serves all 106+ creator caption presets, fonts, animations, colors, AI looks, and bold text presets.
+   */
+  app.get(['/api/templates', '/api/text-templates'], (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
+    const { status, payload } = handleTemplatesApi(req.query as any);
+    res.status(status).json(payload);
   });
 
   /**

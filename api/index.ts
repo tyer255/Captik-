@@ -440,6 +440,8 @@ export async function handleTtsBody(body: any): Promise<{
   };
 }
 
+import { handleTemplatesApi } from '../src/utils/templatesApiHandler.ts';
+
 export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -458,6 +460,22 @@ export default async function handler(req: any, res: any) {
       reelCaptionReady: true,
       vercelServerless: true,
     });
+    return;
+  }
+
+  if (url.includes('/templates') || url.includes('/text-templates')) {
+    res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
+    let query = req.query || {};
+    if (req.url && (!query || Object.keys(query).length === 0)) {
+      try {
+        const urlObj = new URL(req.url, 'http://localhost');
+        query = Object.fromEntries(urlObj.searchParams.entries());
+      } catch {
+        // ignore
+      }
+    }
+    const { status, payload } = handleTemplatesApi(query);
+    res.status(status).json(payload);
     return;
   }
 

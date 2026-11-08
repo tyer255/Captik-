@@ -14,6 +14,14 @@
       "destination": "/api/health"
     },
     {
+      "source": "/api/templates",
+      "destination": "/api/templates"
+    },
+    {
+      "source": "/api/text-templates",
+      "destination": "/api/text-templates"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api"
     },

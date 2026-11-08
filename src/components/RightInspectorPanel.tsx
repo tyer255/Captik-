@@ -13,6 +13,7 @@ import {
   LayoutGrid,
   ChevronRight,
   ChevronLeft,
+  Code2,
 } from 'lucide-react';
 import {
   TEMPLATES,
@@ -66,8 +67,19 @@ export const RightInspectorPanel: React.FC<RightInspectorPanelProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [justSavedToast, setJustSavedToast] = useState<boolean>(false);
+  const [copiedApiToast, setCopiedApiToast] = useState<boolean>(false);
   const [previewMode, setPreviewMode] = useState<'video' | 'studio'>('video');
   const [hoveredTplId, setHoveredTplId] = useState<string | null>(null);
+
+  const handleCopyApiUrl = () => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const fullApiUrl = `${origin}/api/templates`;
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(fullApiUrl).catch(() => {});
+    }
+    setCopiedApiToast(true);
+    setTimeout(() => setCopiedApiToast(false), 2400);
+  };
 
   // Text tab state for 127 Google Fonts & Motion overrides
   const [fontCategory, setFontCategory] = useState<string>('all');
@@ -252,7 +264,18 @@ export const RightInspectorPanel: React.FC<RightInspectorPanelProps> = ({
 
           {/* Section Title + Card View Switcher (Reel + Effect vs Studio Typography) */}
           <div className="px-3.5 py-1.5 border-b border-white/[0.05] flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-zinc-400">
-            <span>DYNAMIC CAPTIONS ({visibleTemplates.length})</span>
+            <div className="flex items-center gap-2">
+              <span>DYNAMIC CAPTIONS ({visibleTemplates.length})</span>
+              <button
+                type="button"
+                onClick={handleCopyApiUrl}
+                title="Copy Native Text Templates API Endpoint (/api/templates)"
+                className="px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/25 flex items-center gap-1 text-[9px] font-mono lowercase tracking-normal cursor-pointer transition-colors"
+              >
+                <Code2 className="w-2.5 h-2.5" />
+                <span>{copiedApiToast ? 'Copied /api/templates' : 'API: /api/templates'}</span>
+              </button>
+            </div>
             <div className="flex items-center gap-1 bg-[#171922] p-0.5 rounded-md border border-white/[0.06]">
               <button
                 type="button"

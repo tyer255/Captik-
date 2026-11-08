@@ -220,17 +220,17 @@ test('getExportCanvasDimensions, computeObjectCoverCrop, and non-alternating beh
   const d720 = getExportCanvasDimensions('9:16', '720p');
   assert.equal(d720.width, 720);
   assert.equal(d720.height, 1280);
-  assert.equal(d720.videoBitsPerSecond, 8_000_000);
+  assert.equal(d720.videoBitsPerSecond, 4_500_000);
 
   const d1080 = getExportCanvasDimensions('9:16', '1080p');
   assert.equal(d1080.width, 1080);
   assert.equal(d1080.height, 1920);
-  assert.equal(d1080.videoBitsPerSecond, 16_000_000);
+  assert.equal(d1080.videoBitsPerSecond, 8_000_000);
 
   const d4k = getExportCanvasDimensions('16:9', '4K');
   assert.equal(d4k.width, 2560);
   assert.equal(d4k.height, 1440);
-  assert.equal(d4k.videoBitsPerSecond, 28_000_000);
+  assert.equal(d4k.videoBitsPerSecond, 14_000_000);
 
   // When a 16:9 video (1920x1080) is drawn into a 9:16 canvas (1080x1920), object-cover center-crops horizontally
   const crop = computeObjectCoverCrop(1920, 1080, 1080, 1920);

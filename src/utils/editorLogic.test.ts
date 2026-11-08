@@ -29,6 +29,7 @@ import {
 } from './projectAndOcrLogic.ts';
 import { TEMPLATES } from '../data/templatesCatalog.ts';
 import { CAPTIK_LOOK_SPECS, CAPTIK_GOOGLE_FONTS } from '../data/captikLookSpecs.ts';
+import { handleTemplatesApi } from './templatesApiHandler.ts';
 
 describe('editorLogic pure functions', () => {
   it('formats studio timecode HH:MM:SS:FF accurately at 30fps', () => {
@@ -121,6 +122,47 @@ describe('editorLogic pure functions', () => {
     const oriel = TEMPLATES.find((t) => t.id === 'look_oriel');
     assert.ok(oriel?.lookSpec);
     assert.equal(oriel?.lookSpec?.family, 'spatial');
+  });
+
+  it('serves text templates API with filtering, pagination, search, ID lookup and presets', () => {
+    // 1. Default all templates
+    const defaultRes = handleTemplatesApi();
+    assert.equal(defaultRes.status, 200);
+    assert.equal(defaultRes.payload.success, true);
+    assert.equal(defaultRes.payload.meta?.totalTemplates, 106);
+    assert.equal(defaultRes.payload.data?.templates?.length, 106);
+
+    // 2. Specific ID lookup
+    const singleRes = handleTemplatesApi({ id: 'captik_glow' });
+    assert.equal(singleRes.status, 200);
+    assert.equal(singleRes.payload.data?.template?.id, 'captik_glow');
+    assert.equal(singleRes.payload.data?.template?.name, 'Captik Glow');
+
+    // 3. Invalid ID 404
+    const notFoundRes = handleTemplatesApi({ id: 'non_existent_123' });
+    assert.equal(notFoundRes.status, 404);
+    assert.equal(notFoundRes.payload.success, false);
+    assert.ok(Array.isArray(notFoundRes.payload.availableIds));
+
+    // 4. Category filter
+    const popularRes = handleTemplatesApi({ category: 'popular' });
+    assert.equal(popularRes.status, 200);
+    assert.equal(popularRes.payload.data?.templates?.length, 16);
+
+    // 5. Keyword search
+    const mrBeastRes = handleTemplatesApi({ q: 'mrbeast' });
+    assert.equal(mrBeastRes.status, 200);
+    assert.ok((mrBeastRes.payload.data?.templates?.length || 0) >= 1);
+
+    // 6. Bold text presets type
+    const presetsRes = handleTemplatesApi({ type: 'presets' });
+    assert.equal(presetsRes.status, 200);
+    assert.ok((presetsRes.payload.data?.boldTextPresets?.length || 0) > 0);
+
+    // 7. Pagination
+    const pageRes = handleTemplatesApi({ limit: 5, offset: 10 });
+    assert.equal(pageRes.status, 200);
+    assert.equal(pageRes.payload.data?.templates?.length, 5);
   });
 
   it('computes pause removal savings for Tight and Natural modes', () => {

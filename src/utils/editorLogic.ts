@@ -981,8 +981,15 @@ export function filterTemplates(
     if (!matchesCategory) return false;
     if (!q) return true;
 
+    const cleanQ = q.replace(/[\s_]/g, '');
+    const cleanId = tpl.id.toLowerCase().replace(/[\s_]/g, '');
+    const cleanName = tpl.name.toLowerCase().replace(/[\s_]/g, '');
+
     return (
+      cleanId.includes(cleanQ) ||
+      cleanName.includes(cleanQ) ||
       tpl.name.toLowerCase().includes(q) ||
+      tpl.id.toLowerCase().includes(q) ||
       tpl.description.toLowerCase().includes(q) ||
       tpl.category.toLowerCase().includes(q) ||
       tpl.fontFamily.toLowerCase().includes(q)
